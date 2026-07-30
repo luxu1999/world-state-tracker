@@ -563,7 +563,7 @@
   // ==================== 静默状态总结 ====================
 
   // 使用 generateQuietPrompt 静默生成世界状态（不显示在聊天中）
-  var summarizeLock = false; // 防止并发
+  var summarizeLock = false;
 
   async function summarizeChatHistory() {
     if (summarizeLock) { console.log('[WST] 已有总结任务进行中，跳过'); return; }
@@ -571,62 +571,65 @@
 
     try {
       var ctx = SillyTavern.getContext();
-      if (!ctx.chat || !Array.isArray(ctx.chat) || ctx.chat.length < 2) {
+      if (!ctx.chat || !Array.isArray(ctx.chat) || ctx.chat.length < 1) {
         console.log('[WST] 聊天记录不足，跳过总结');
         return;
       }
 
-      // 构建聊天历史文本（最后20条，避免token过多）
-      var recentMessages = ctx.chat.slice(-20);
+      // 构建聊天历史文本（最后15条，控制token）
+      var recentMessages = ctx.chat.slice(-15);
       var historyText = '';
       for (var i = 0; i < recentMessages.length; i++) {
         var m = recentMessages[i];
-        var role = m.is_user ? (ctx.name1 || '用户') : (m.name || '角色');
+        var role = m.is_user ? (ctx.name1 || '用户') : (m.name || 'AI');
         var text = (m.mes || '').replace(/<WST_世界状态>[\s\S]*?<\/WST_世界状态>/g, '').trim();
         if (text) historyText += role + '：' + text + '\n';
       }
 
       if (!historyText.trim()) { console.log('[WST] 无有效聊天文本'); return; }
 
-      // 获取世界书数据
       var wbData = getWorldBookData();
       var favorSys = wbData.favorabilitySystem || getDefaultFavorabilitySystem();
-      var wbNote = wbData.allKeys.length > 0 ? '（仅限世界书角色：' + wbData.allKeys.join('、') + '）' : '';
+      var wbNote = wbData.allKeys.length > 0 ? '仅限世界书角色：' + wbData.allKeys.join('、') + '。' : '';
 
-      var prompt = '你是一个状态追踪器。请阅读以下聊天记录，总结当前的世界状态。\n\n' +
-        '聊天记录：\n' + historyText + '\n' +
-        '请严格按以下格式输出世界状态（不要输出任何其他内容）：\n' +
-        '时间：（根据剧情推导当前日期时间）\n' +
-        '区域：（故事发生的地点）\n' +
-        '在场角色+BUFF：' + wbNote + '（列出当前在场的角色名及其状态BUFF，用逗号分隔）\n' +
-        '不在场角色：（列出不在场的角色名）\n' +
-        '处女膜状态：（列出各角色的处女膜状态）\n' +
-        '做爱次数：（列出各角色做爱次数）\n' +
-        '当前好感度：（按此好感系统计算：' + favorSys + '。输出格式如"角色A→角色B 70/100"）\n' +
-        '身体外貌：（列出各角色当前外观描述）\n' +
-        '重要记忆点：（每人最多6条，只记录改变人生的重要事件。格式：- 角色名：记忆1|记忆2。每条≤70字）';
+      var systemMsg = '你是世界状态追踪器。根据聊天记录提取当前世界状态。只输出状态，不要解释。';
+      var userMsg = '聊天记录：\n' + historyText + '\n\n' +
+        '请按以下格式输出当前世界状态：\n' +
+        '时间：\n区域：\n在场角色+BUFF：' + wbNote + '\n不在场角色：\n' +
+        '处女膜状态：\n做爱次数：\n当前好感度：\n身体外貌：\n' +
+        '重要记忆点：\n- 角色名：记忆1|记忆2\n\n' +
+        '规则：好感度系统=' + favorSys + '。重要记忆每人≤6条，只记改变人生的事件，每条≤70字。';
 
-      console.log('[WST] 🤖 开始静默总结聊天历史...');
+      console.log('[WST] 🤖 开始静默总结 (历史长度:' + historyText.length + ' chars)...');
 
-      var result = await ctx.generateQuietPrompt({ quietPrompt: prompt, skipWIAN: true });
+      var result = await ctx.generateQuietPrompt({
+        quietPrompt: systemMsg + '\n\n' + userMsg,
+        skipWIAN: true
+      });
 
-      // generateQuietPrompt 可能返回字符串或对象
+      // generateQuietPrompt 返回字符串或 { mes: "..." } 对象
       var resultText = '';
       if (typeof result === 'string') {
         resultText = result;
       } else if (result && typeof result === 'object') {
-        resultText = result.text || result.content || result.mes || JSON.stringify(result);
+        resultText = result.mes || result.text || result.content || '';
+        // 有些版本返回 chat 数组
+        if (!resultText && Array.isArray(result) && result.length > 0) {
+          resultText = result[result.length - 1].mes || result[result.length - 1].content || '';
+        }
+        if (!resultText && result.message) resultText = result.message;
+        if (!resultText) resultText = JSON.stringify(result);
       }
 
-      console.log('[WST] 静默总结结果 (' + resultText.length + ' chars):', resultText.substring(0, 150));
+      console.log('[WST] 总结原始返回 (' + resultText.length + ' chars):', resultText.substring(0, 200));
 
-      if (resultText) {
+      if (resultText && resultText.length > 10) {
         var newState = parseSummary(resultText);
-        if (newState && (newState.time || newState.location || newState.present)) {
+        if (newState && (newState.time || newState.location || newState.present || newState.absent)) {
           var oldState = loadState();
           var merged = mergeState(oldState, newState);
           saveState(merged);
-          console.log('[WST] ✅ 静默总结成功，状态已更新');
+          console.log('[WST] ✅ 状态已更新 - 时间:', merged.time, '| 区域:', merged.location);
 
           // 刷新所有卡片
           var allBodies = document.querySelectorAll('.wst-body');
@@ -635,23 +638,25 @@
           }
           lastStateSentHash = '';
         } else {
-          console.log('[WST] ⚠️ 总结结果解析失败，原文:', resultText.substring(0, 200));
+          console.log('[WST] ⚠️ 解析后状态仍为空，可能需要调整Prompt。解析结果:', JSON.stringify(newState).substring(0, 200));
         }
+      } else {
+        console.log('[WST] ⚠️ 总结返回内容过短或为空');
       }
     } catch (e) {
-      console.warn('[WST] 静默总结失败:', e.message);
+      console.warn('[WST] 静默总结失败:', e.message, e.stack);
     } finally {
       summarizeLock = false;
     }
   }
 
-  // 触发静默总结（仅在首次或状态为空时）
-  function triggerSummarizeIfNeeded() {
-    var state = loadState();
-    if (isFirstTimeState(state) && hasChatHistory()) {
-      console.log('[WST] 状态为空且有聊天历史，触发静默总结');
-      summarizeChatHistory();
-    }
+  // 每次AI回复后触发静默总结
+  function triggerSummarize() {
+    var ctx;
+    try { ctx = SillyTavern.getContext(); } catch(e) { return; }
+    if (!ctx.chat || !Array.isArray(ctx.chat) || ctx.chat.length < 1) return;
+    // 总是触发，让generateQuietPrompt决定是否需要更新
+    summarizeChatHistory();
   }
 
   // 方法 A：DOM 捕获阶段拦截 — 在酒馆读取文本框之前注入状态
@@ -829,11 +834,14 @@
       es.on(et.CHARACTER_MESSAGE_RENDERED, function () {
         clearTimeout(timer);
         lastStateSentHash = '';
-        timer = setTimeout(function () {
-          scan();
-          // 每次AI回复后，触发静默总结（如果状态为空）
-          triggerSummarizeIfNeeded();
-        }, DEBOUNCE_MS);
+        timer = setTimeout(scan, DEBOUNCE_MS);
+      });
+
+      // AI回复生成完毕后，触发静默总结提取世界状态
+      es.on(et.GENERATION_ENDED, function () {
+        setTimeout(function () {
+          triggerSummarize();
+        }, 600);
       });
 
       // 方法 C（最可靠）：监听新消息加入DOM → 赶在API调用前修改聊天数组
