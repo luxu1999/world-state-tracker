@@ -247,33 +247,83 @@
     text = text.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
     text = text.replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '');
 
+    // 关键修复：先按字段标签拆分（处理AI把所有字段写在同一行的情况）
+    var FIELD_LABELS = [
+      '时间：', '时间:',
+      '区域：', '区域:',
+      '在场角色+BUFF：', '在场角色+BUFF:',
+      '不在场角色：', '不在场角色:',
+      '处女膜状态：', '处女膜状态:',
+      '做爱次数：', '做爱次数:',
+      '当前好感度：', '当前好感度:',
+      '身体外貌：', '身体外貌:',
+      '重要记忆点：', '重要记忆点:',
+    ];
+
+    // 构建正则切割：在每个字段标签前插入换行符
+    var splitRe = new RegExp('(' + FIELD_LABELS.map(function(l) {
+      return l.replace(/[+]/g, '\\+');
+    }).join('|') + ')', 'g');
+
+    // 先按换行拆分，每行再按字段标签拆分
     var lines = text.split('\n');
-
-    for (var i = 0; i < lines.length; i++) {
-      var line = lines[i].trim();
-      if (!line) continue;
-
-      if (line.indexOf('时间：') === 0 || line.indexOf('时间:') === 0)
-        state.time = line.replace(/^时间[：:]\s*/, '').trim();
-      else if (line.indexOf('区域：') === 0 || line.indexOf('区域:') === 0)
-        state.location = line.replace(/^区域[：:]\s*/, '').trim();
-      else if (line.indexOf('在场角色+BUFF：') === 0 || line.indexOf('在场角色+BUFF:') === 0)
-        state.present = line.replace(/^在场角色\+BUFF[：:]\s*/, '').trim();
-      else if (line.indexOf('不在场角色：') === 0 || line.indexOf('不在场角色:') === 0)
-        state.absent = line.replace(/^不在场角色[：:]\s*/, '').trim();
-      else if (line.indexOf('处女膜状态：') === 0 || line.indexOf('处女膜状态:') === 0)
-        state.hymen = line.replace(/^处女膜状态[：:]\s*/, '').trim();
-      else if (line.indexOf('做爱次数：') === 0 || line.indexOf('做爱次数:') === 0)
-        state.sexCount = line.replace(/^做爱次数[：:]\s*/, '').trim();
-      else if (line.indexOf('当前好感度：') === 0 || line.indexOf('当前好感度:') === 0)
-        state.affection = line.replace(/^当前好感度[：:]\s*/, '').trim();
-      else if (line.indexOf('身体外貌：') === 0 || line.indexOf('身体外貌:') === 0)
-        state.appearance = line.replace(/^身体外貌[：:]\s*/, '').trim();
+    var allSegments = [];
+    for (var li = 0; li < lines.length; li++) {
+      var l = lines[li].trim();
+      if (!l) continue;
+      // 把一行中紧密相连的字段切开
+      var parts = l.split(splitRe).filter(function(s) { return s.trim(); });
+      for (var pi = 0; pi < parts.length; pi++) {
+        allSegments.push(parts[pi].trim());
+      }
     }
 
-    var memSection = text.match(/重要记忆点[：:]\s*\n?([\s\S]*?)(?=\n\S|$)/);
+    // 合并回带字段标签的行：找到标签开头，和其后面的值
+    var currentLabel = null;
+    var currentValue = '';
+
+    function flushField() {
+      if (!currentLabel) return;
+      if (currentLabel.indexOf('时间') === 0) state.time = (state.time ? state.time + ' ' : '') + currentValue;
+      else if (currentLabel.indexOf('区域') === 0) state.location = (state.location ? state.location + ' ' : '') + currentValue;
+      else if (currentLabel.indexOf('在场角色') === 0 || currentLabel.indexOf('在场角色+BUFF') === 0) state.present = (state.present ? state.present + ' ' : '') + currentValue;
+      else if (currentLabel.indexOf('不在场角色') === 0) state.absent = (state.absent ? state.absent + ' ' : '') + currentValue;
+      else if (currentLabel.indexOf('处女膜') === 0) state.hymen = (state.hymen ? state.hymen + ' ' : '') + currentValue;
+      else if (currentLabel.indexOf('做爱') === 0) state.sexCount = (state.sexCount ? state.sexCount + ' ' : '') + currentValue;
+      else if (currentLabel.indexOf('当前好感') === 0) state.affection = (state.affection ? state.affection + ' ' : '') + currentValue;
+      else if (currentLabel.indexOf('身体外貌') === 0) state.appearance = (state.appearance ? state.appearance + ' ' : '') + currentValue;
+      currentLabel = null;
+      currentValue = '';
+    }
+
+    for (var si = 0; si < allSegments.length; si++) {
+      var seg = allSegments[si];
+      var matchedLabel = null;
+      for (var fi = 0; fi < FIELD_LABELS.length; fi++) {
+        if (seg.indexOf(FIELD_LABELS[fi]) === 0) {
+          matchedLabel = FIELD_LABELS[fi];
+          break;
+        }
+      }
+
+      if (matchedLabel) {
+        flushField();
+        currentLabel = matchedLabel;
+        currentValue = seg.substring(matchedLabel.length).trim();
+      } else {
+        // 续行：追加到当前字段
+        if (currentLabel) {
+          currentValue += (currentValue ? ' ' : '') + seg;
+        }
+      }
+    }
+    flushField();
+
+    // 解析重要记忆点（可能在 currentValue 中，也可能在多行中）
+    var allText = text;
+    var memSection = allText.match(/重要记忆点[：:]\s*\n?([\s\S]*?)$/);
     if (memSection) {
-      var memText = memSection[1] || memSection[0].replace(/^重要记忆点[：:]\s*/, '');
+      var memText = memSection[1];
       var charPattern = /[-•●◆▪▸►]\s*(.+?)[：:]\s*(.+)/g;
       var match;
       while ((match = charPattern.exec(memText)) !== null) {
@@ -660,97 +710,24 @@
   }
 
   // 方法 A：DOM 捕获阶段拦截 — 在酒馆读取文本框之前注入状态
-  function injectStateToTextarea() {
-    var textarea = document.querySelector('#send_textarea');
-    if (!textarea) return;
+  // ⚠️ 已禁用：会导致二次点击才能发送的bug
+  function injectStateToTextarea() { /* disabled */ }
 
-    // 如果内容为空（没有用户实际输入），不注入
-    var userText = textarea.value.trim();
-    if (!userText) return;
-
-    // 如果已经包含 WST 标记，不再重复注入
-    if (textarea.value.indexOf('<WST_世界状态>') !== -1) return;
-
+  // 使用 setExtensionPrompt 注入状态（不修改聊天数组，不修改文本框）
+  function injectStateToPrompt() {
     var state = loadState();
-    if (!shouldInject(state)) return;
-
-    // 检查是否和上次注入的状态相同（避免连续重复注入）
-    var currentHash = hashState(state);
-    if (currentHash === lastStateSentHash && lastStateSentHash !== '') return;
-
+    if (!hasContent(state)) return;
     var stateText = buildStatePrompt(state);
-    textarea.value = stateText + '\n\n' + textarea.value;
-    lastStateSentHash = currentHash;
-    console.log('[WST] ✅ 状态已注入到发送框 (' + stateText.length + ' chars)');
-  }
-
-  // 方法 B：修改聊天数组（主方案）+ Extension Prompt API（兜底）
-  function injectStateToChatArray() {
     try {
       var ctx = SillyTavern.getContext();
-
-      var state = loadState();
-      if (!shouldInject(state)) { console.log('[WST] shouldInject=false，跳过'); return false; }
-
-      var stateText = buildStatePrompt(state);
-
-      // 主方案：直接修改聊天数组中的用户消息
-      if (ctx.chat && Array.isArray(ctx.chat)) {
-        var foundUser = false;
-        for (var i = ctx.chat.length - 1; i >= 0; i--) {
-          var msg = ctx.chat[i];
-          // 兼容不同酒馆版本的 is_user / role / name 属性
-          if (msg.is_user || msg.role === 'user' || (msg.name && msg.name === (ctx.name1 || ''))) {
-            foundUser = true;
-            var cleanMes = msg.mes.replace(/<WST_世界状态>[\s\S]*?<\/WST_世界状态>\n*/g, '');
-            if (cleanMes.indexOf('<WST_世界状态>') === -1) {
-              msg.mes = stateText + '\n\n' + cleanMes;
-              console.log('[WST] ✅ 状态已注入到聊天数组[' + i + '] (' + stateText.length + ' chars)');
-              return true;
-            }
-            break;
-          }
-        }
-        if (!foundUser) {
-          console.log('[WST] ⚠️ chat数组长度=' + ctx.chat.length + '，但未找到用户消息。最后5条属性:');
-          for (var j = Math.max(0, ctx.chat.length - 5); j < ctx.chat.length; j++) {
-            console.log('  [' + j + '] is_user=' + ctx.chat[j].is_user + ' role=' + ctx.chat[j].role + ' name=' + ctx.chat[j].name + ' is_system=' + ctx.chat[j].is_system);
-          }
-        }
-      } else {
-        console.log('[WST] ctx.chat不可用，类型:', typeof ctx.chat, 'Array.isArray:', Array.isArray(ctx.chat));
-      }
-
-      // 兜底：Extension Prompt API
       if (typeof ctx.setExtensionPrompt === 'function') {
         ctx.setExtensionPrompt('wst', stateText, 0);
-        console.log('[WST] ✅ 状态通过 Extension Prompt API 注入（兜底）');
-        return true;
+        console.log('[WST] ✅ 状态已注入到Prompt (' + stateText.length + ' chars)');
       }
-
     } catch (e) {
-      console.warn('[WST] 注入失败:', e.message);
+      console.warn('[WST] Prompt注入失败:', e.message);
     }
-    return false;
   }
-
-  // ==================== DOM 事件拦截 ====================
-
-  // 捕获 Enter 键（在酒馆处理之前修改文本框）
-  document.addEventListener('keydown', function (e) {
-    if (e.key !== 'Enter' || e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return;
-    var textarea = document.querySelector('#send_textarea');
-    if (!textarea || document.activeElement !== textarea) return;
-    if (!textarea.value.trim()) return;
-    injectStateToTextarea();
-  }, true); // capture phase = 先于酒馆处理
-
-  // 捕获发送按钮点击
-  document.addEventListener('mousedown', function (e) {
-    var sendBtn = e.target.closest('#send_but');
-    if (!sendBtn) return;
-    injectStateToTextarea();
-  }, true);
 
   // ==================== 点击交互 ====================
   document.addEventListener('click', function (e) {
@@ -844,42 +821,13 @@
         }, 600);
       });
 
-      // 方法 C（最可靠）：监听新消息加入DOM → 赶在API调用前修改聊天数组
-      var chatContainer = document.querySelector('#chat');
-      if (chatContainer) {
-        var injectionObserver = new MutationObserver(function (mutations) {
-          for (var m = 0; m < mutations.length; m++) {
-            var added = mutations[m].addedNodes;
-            for (var n = 0; n < added.length; n++) {
-              var node = added[n];
-              if (node.nodeType !== 1) continue;
-              // 检测当前节点或子节点是否包含 .mes（酒馆可能包裹在div中）
-              var isMes = node.classList && node.classList.contains('mes');
-              var containsMes = node.querySelector && node.querySelector('.mes');
-              if (isMes || containsMes) {
-                lastStateSentHash = '';
-                // 同步执行，确保在API调用前完成
-                injectStateToChatArray();
-                console.log('[WST] DOM检测到新消息，已触发注入');
-                return;
-              }
-            }
-          }
-        });
-        injectionObserver.observe(chatContainer, { childList: true });
-        console.log('[WST] ✅ DOM观察者已就绪');
-      }
-
       es.on(et.MESSAGE_SENT, function () {
         lastStateSentHash = '';
-        // 兜底
-        setTimeout(function () {
-          injectStateToChatArray();
-        }, 100);
+        injectStateToPrompt();
       });
 
       es.on(et.GENERATION_STARTED, function () {
-        injectStateToChatArray();
+        injectStateToPrompt();
       });
 
       es.on(et.CHAT_CHANGED, function () {
