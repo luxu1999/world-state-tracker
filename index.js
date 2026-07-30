@@ -60,27 +60,93 @@
     } catch (e) { return 'default'; }
   }
 
-  // 获取用户扮演的角色名（排除用）
+  // 获取用户扮演的角色名（排除用）— 尝试多种路径
+  var _cachedUserName = null;
+  var _cachedUserNameChatId = null;
   function getUserPersonaName() {
     try {
       var ctx = SillyTavern.getContext();
+      var cid = getChatId();
+      if (_cachedUserName && _cachedUserNameChatId === cid) return _cachedUserName;
+
+      // 路径1: ctx.name1（酒馆用户显示名）
       var name = ctx.name1 || '';
-      if (name && name !== '用户' && name !== 'User') return name.trim();
-      // 也检查 persona 设置
-      if (ctx.persona && ctx.persona.name && ctx.persona.name.trim()) {
-        return ctx.persona.name.trim();
+      if (name && name !== '用户' && name !== 'User' && name !== 'You') {
+        _cachedUserName = name.trim();
+        _cachedUserNameChatId = cid;
+        return _cachedUserName;
       }
+
+      // 路径2: persona 对象
+      if (ctx.persona && ctx.persona.name && ctx.persona.name.trim()) {
+        name = ctx.persona.name.trim();
+        if (name !== '用户' && name !== 'User') {
+          _cachedUserName = name;
+          _cachedUserNameChatId = cid;
+          return _cachedUserName;
+        }
+      }
+
+      // 路径3: 从聊天记录中找用户消息的 name（最可靠）
+      if (ctx.chat && Array.isArray(ctx.chat)) {
+        for (var i = ctx.chat.length - 1; i >= 0; i--) {
+          if (ctx.chat[i].is_user && ctx.chat[i].name) {
+            var uname = ctx.chat[i].name.trim();
+            if (uname && uname !== '用户' && uname !== 'User' && uname !== 'You') {
+              _cachedUserName = uname;
+              _cachedUserNameChatId = cid;
+              console.log('[WST] 从聊天记录中检测到用户名:', uname);
+              return _cachedUserName;
+            }
+          }
+        }
+      }
+
+      _cachedUserName = '';
+      _cachedUserNameChatId = cid;
       return '';
     } catch(e) { return ''; }
   }
 
+  // 清除用户名缓存
+  function clearUserNameCache() {
+    _cachedUserName = null;
+    _cachedUserNameChatId = null;
+  }
+
   // 从文本中过滤掉用户扮演的角色名
+  // 支持精确匹配和部分匹配（如"魔王·黯蚀" → "魔王"也能匹配）
   function removeUserFromText(text) {
     var userName = getUserPersonaName();
     if (!userName || !text) return text;
-    // 匹配 "角色名-BUFF描述" 或 "角色名（BUFF）" 等
-    var re = new RegExp('(^|[，,、\\s]+)' + userName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?:-[^，,、\\n]*)?(?=[，,、\\s]|$)', 'g');
-    return text.replace(re, '$1').replace(/^[，,、\s]+|[，,、\s]+$/g, '');
+
+    // 提取基本名（去掉·后面的后缀）
+    var baseName = userName.split(/[·•]/)[0].trim();
+    var namesToRemove = [userName];
+    if (baseName && baseName !== userName && baseName.length >= 1) {
+      namesToRemove.push(baseName);
+    }
+
+    for (var ni = 0; ni < namesToRemove.length; ni++) {
+      var n = namesToRemove[ni];
+      if (n.length < 2) continue;
+      var esc = n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      // 匹配完整角色名（含后缀和BUFF）
+      var fullRe = new RegExp(
+        esc +
+        '(?:[·•][^，,、\\s(（)]+)?' +          // 可选·后缀
+        '(?:[（(][^)）]*[)）])?' +                // 可选BUFF括号
+        '(?:-[^，,、\\s]+)?' +                    // 可选-描述
+        '(?=[，,、\\s]|$)',
+        'g'
+      );
+      text = text.replace(fullRe, '');
+    }
+
+    // 清理残留：连续分隔符、首尾分隔符
+    text = text.replace(/[，,、]{2,}/g, '，').replace(/[，,、]{2,}/g, '，');
+    text = text.replace(/^[，,、\s]+/, '').replace(/[，,、\s]+$/, '');
+    return text;
   }
 
   function hasContent(state) {
@@ -293,12 +359,39 @@
   }
 
   // ==================== S-summary 解析 ====================
+
+  // 预处理：强制将每个字段标签移到新行开头（防止AI把多个字段写在同一行）
+  function normalizeSummaryLines(text) {
+    var labels = [
+      '时间：', '时间:',
+      '区域：', '区域:',
+      '在场角色\\+BUFF：', '在场角色\\+BUFF:',
+      '在场角色：', '在场角色:',
+      '不在场角色：', '不在场角色:',
+      '处女膜状态：', '处女膜状态:',
+      '做爱次数：', '做爱次数:',
+      '当前好感度：', '当前好感度:',
+      '身体外貌：', '身体外貌:',
+      '重要记忆点：', '重要记忆点:',
+    ];
+    for (var i = 0; i < labels.length; i++) {
+      var label = labels[i];
+      // 在标签前插入换行符（如果前面不是换行或开头）
+      var re = new RegExp('(.)(' + label + ')', 'g');
+      text = text.replace(re, '$1\n$2');
+    }
+    return text;
+  }
+
   function parseSummary(text) {
     var state = createEmptyState();
     if (!text || typeof text !== 'string') return state;
 
     text = text.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
     text = text.replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '');
+
+    // 预处理：确保每个字段标签独占一行
+    text = normalizeSummaryLines(text);
 
     // 关键修复：先按字段标签拆分（处理AI把所有字段写在同一行的情况）
     // 注意：长标签必须在短标签前面，确保"在场角色+BUFF："优先匹配
@@ -473,6 +566,7 @@
     lines.push('3. 在场角色 = 当前场景（最近消息对话场景）中出现的所有女性角色。');
     lines.push('4. 不在场角色 = 之前出现过但当前不在主角所在场景的女性角色。');
     lines.push('   格式：角色名-在做什么（≤10字）。当前场景中的角色绝不能误判为不在场。');
+    lines.push('   禁止泛称！不允许写"七神""众人""其他角色"等非具体角色名。');
 
     // 世界书角色清单
     if (wbCharKeys.length > 0) {
@@ -775,7 +869,9 @@
         '  不在场角色 = 之前在正文中出现过的女性角色，但当前不在主角所在场景。\n' +
         '  当前场景中出现的角色绝不能被误判为不在场！\n' +
         '  从未在正文中出现过的角色一律不列入不在场。\n' +
-        '  格式：角色名-在做什么（每个角色≤10字），如"琴-在骑士团办公"。\n\n' +
+        '  格式：角色名-在做什么（每个角色≤10字），如"琴-在骑士团办公"。\n' +
+        '  【严禁】不允许出现泛称条目！禁止写"七神及各国角色""其他角色""众人"等非具体角色名的条目。\n' +
+        '  不在场角色必须是世界书中的具体女性角色名，每个一行。\n\n' +
         '【规则3：在场与不在场互斥】\n' +
         '  同一角色绝对不能同时出现在两边。如果在场角色列了某角色，不在场绝对不能列她。\n\n' +
         (wbData.allKeys.length > 0 ? '【规则4：世界书角色约束】\n   在场/不在场中只能出现世界书角色：' + wbData.allKeys.join('、') + '。\n   非世界书角色不列入。\n\n' : '') +
@@ -787,7 +883,7 @@
         '【输出前自检】在你输出<S-summary>之前，请再次确认：\n' +
         '  □ 是否所有在场角色都正确识别了？（检查最近消息中所有出现的女性角色）\n' +
         '  □ 当前场景中的角色是否被错误分到了"不在场角色"？\n' +
-        '  □ 不在场角色是否为"之前出现过但现在不在"？\n' +
+        '  □ 不在场角色是否为"之前出现过但现在不在"的具体角色名？是否有泛称（如"七神""众人"）？\n' +
         '  □ 是否排除了用户角色和所有男性角色？';
 
       console.log('[WST] 🤖 开始静默总结 (历史长度:' + historyText.length + ' chars)...');
@@ -956,7 +1052,7 @@
   }
 
   jQuery(async function () {
-    console.log('[WST] 🚀 世界状态追踪器 v3.1.0 初始化...');
+    console.log('[WST] 🚀 世界状态追踪器 v3.2.0 初始化...');
     currentChatId = getChatId();
     cleanLegacyWSTTags();
 
@@ -993,6 +1089,7 @@
 
       es.on(et.CHAT_CHANGED, function () {
         currentChatId = getChatId();
+        clearUserNameCache();
         lastStateSentHash = '';
         clearTimeout(timer);
         timer = setTimeout(scan, 500);
