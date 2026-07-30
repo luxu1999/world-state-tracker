@@ -1,49 +1,50 @@
-(function () {
-  'use strict';
+import { eventSource, event_types } from '../../../../script.js';
 
-  const PROCESSED = new WeakSet();
-  const DEBOUNCE_MS = 300;
-  let observer = null;
-  let timer = null;
+const PROCESSED = new WeakSet();
+const DEBOUNCE_MS = 300;
+let timer = null;
 
-  /** 扫描聊天区中新出现的 AI 消息，给每条追加粉色空框 */
-  function scan() {
-    // 酒馆消息容器的选择器
-    const allMessages = document.querySelectorAll('.mes');
+console.log('[WST] 扩展脚本已加载');
 
-    for (const msg of allMessages) {
-      // 跳过已处理过的
-      if (PROCESSED.has(msg)) continue;
-      // 跳过已有卡片的
-      if (msg.querySelector('.wst-card')) continue;
+/**
+ * 扫描所有 .mes 元素，给未处理的追加粉色框
+ */
+function scan() {
+  const allMessages = document.querySelectorAll('.mes');
+  console.log('[WST] scan() 发现消息数:', allMessages.length);
 
-      PROCESSED.add(msg);
+  for (const msg of allMessages) {
+    if (PROCESSED.has(msg)) continue;
+    if (msg.querySelector('.wst-card')) continue;
 
-      const card = document.createElement('div');
-      card.className = 'wst-card';
-      msg.appendChild(card);
-    }
+    PROCESSED.add(msg);
+
+    const card = document.createElement('div');
+    card.className = 'wst-card';
+    card.textContent = 'WST';
+    msg.appendChild(card);
+
+    console.log('[WST] 已追加粉色框到一条消息');
   }
+}
 
-  /** 启动 MutationObserver */
-  function start() {
-    const chat = document.querySelector('#chat') || document.body;
+/**
+ * 监听 ST 事件：消息渲染完成
+ */
+eventSource.on(event_types.MESSAGE_RECEIVED, () => {
+  console.log('[WST] MESSAGE_RECEIVED 事件触发');
+  clearTimeout(timer);
+  timer = setTimeout(scan, DEBOUNCE_MS);
+});
 
-    observer = new MutationObserver(function () {
-      clearTimeout(timer);
-      timer = setTimeout(scan, DEBOUNCE_MS);
-    });
+eventSource.on(event_types.CHAT_CHANGED, () => {
+  console.log('[WST] CHAT_CHANGED 事件触发');
+  clearTimeout(timer);
+  timer = setTimeout(scan, 500);
+});
 
-    observer.observe(chat, { childList: true, subtree: true });
-
-    // 立即扫描已存在的消息
-    setTimeout(scan, 500);
-  }
-
-  // 等 DOM 就绪后启动
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', start);
-  } else {
-    start();
-  }
-})();
+// 页面加载完也扫一遍
+jQuery(() => {
+  console.log('[WST] jQuery ready，开始初始扫描');
+  setTimeout(scan, 1000);
+});

@@ -1,8 +1,11 @@
 {
-  "name": "世界状态追踪器",
-  "description": "世界状态追踪器",
-  "version": "1.0.0",
-  "author": "MEI",
-  "entry": "index.js",
-  "css": "style.css"
+    "display_name": "世界状态追踪器",
+    "loading_order": 9,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "MEI",
+    "version": "1.0.0",
+    "homePage": "https://github.com/luxu1999/world-state-tracker"
 }
