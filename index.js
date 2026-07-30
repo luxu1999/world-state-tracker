@@ -815,9 +815,27 @@
   });
 
   // ==================== 初始化 ====================
+
+  // 清理旧版本在聊天数组中残留的WST标签
+  function cleanLegacyWSTTags() {
+    try {
+      var ctx = SillyTavern.getContext();
+      if (!ctx.chat || !Array.isArray(ctx.chat)) return;
+      var cleaned = 0;
+      for (var i = 0; i < ctx.chat.length; i++) {
+        if (ctx.chat[i].mes && ctx.chat[i].mes.indexOf('<WST_世界状态>') !== -1) {
+          ctx.chat[i].mes = ctx.chat[i].mes.replace(/<WST_世界状态>[\s\S]*?<\/WST_世界状态>\n*/g, '');
+          cleaned++;
+        }
+      }
+      if (cleaned > 0) console.log('[WST] 🧹 清理了 ' + cleaned + ' 条消息中的旧WST标签');
+    } catch(e) {}
+  }
+
   jQuery(async function () {
-    console.log('[WST] 🚀 世界状态追踪器 v2.1.0 初始化...');
+    console.log('[WST] 🚀 世界状态追踪器 v2.2.0 初始化...');
     currentChatId = getChatId();
+    cleanLegacyWSTTags();
 
     // 打印世界书信息
     var wbData = getWorldBookData();
