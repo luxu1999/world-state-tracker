@@ -6,9 +6,6 @@
     "js": "index.js",
     "css": "style.css",
     "author": "MEI",
-    "version": "1.0.3",
-    "homePage": "https://github.com/luxu1999/world-state-tracker",
-    "hooks": {
-        "activate": "onActivate"
-    }
+    "version": "1.0.4",
+    "homePage": "https://github.com/luxu1999/world-state-tracker"
 }
