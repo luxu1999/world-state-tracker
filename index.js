@@ -559,17 +559,34 @@
   }
 
   // ==================== 处理单条消息 ====================
+
+  // 通过对比聊天数组判断消息是否来自用户
+  function isUserMessage(msgEl) {
+    try {
+      var ctx = SillyTavern.getContext();
+      if (!ctx.chat || !Array.isArray(ctx.chat)) return false;
+      var mesText = msgEl.querySelector('.mes_text');
+      var text = mesText ? (mesText.textContent || '').trim() : '';
+      if (!text) return false;
+      // 取前50字做匹配
+      var prefix = text.substring(0, 50);
+      for (var i = ctx.chat.length - 1; i >= 0; i--) {
+        var chatMsg = ctx.chat[i].mes || '';
+        if (chatMsg.trim().substring(0, 50) === prefix) {
+          return !!ctx.chat[i].is_user;
+        }
+      }
+      return false;
+    } catch(e) { return false; }
+  }
+
   function processMessage(msg) {
     if (PROCESSED.has(msg)) return;
     PROCESSED.add(msg);
 
-    // 跳过用户消息：用户消息没有角色头像
-    var mesAvatar = msg.querySelector('.mes_avatar, .avatar, img.avatar');
-    var isUserMsg = msg.querySelector('.mes_user, [data-isuser="true"]') !== null;
-    var isSystemMsg = msg.classList.contains('system_mes');
-    if (isUserMsg || isSystemMsg) return;
-    // 如果没有头像且不是系统消息，也视为用户消息
-    if (!mesAvatar && !isSystemMsg) return;
+    // 跳过用户消息和系统消息
+    if (isUserMessage(msg)) return;
+    if (msg.classList.contains('system_mes')) return;
 
     var mesText = msg.querySelector('.mes_text');
     if (!mesText) return;
