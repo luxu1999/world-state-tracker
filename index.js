@@ -374,12 +374,11 @@
     // 首次回溯：状态全空但有聊天历史时，让AI根据已有剧情补齐
     if (isFirstTimeState(state) && hasChatHistory()) {
       lines.push('');
-      lines.push('【重要指令：首次状态回溯】');
-      lines.push('当前世界状态为空。你必须查阅上方的全部聊天历史，推导并输出当前的世界状态。');
-      lines.push('在回复末尾用 <S-summary> 标签输出，每个字段都必须填入根据剧情推导的具体值：');
-      lines.push('时间（根据剧情推导日期时间）、区域（故事发生地点）、在场角色+BUFF（仅世界书中角色）、');
-      lines.push('不在场角色、处女膜状态、做爱次数、当前好感度（按好感系统计算）、身体外貌、重要记忆点。');
-      lines.push('禁止留空。这是强制要求。');
+      lines.push('【系统指令：首次状态回溯】');
+      lines.push('你必须查看上方聊天历史，推导当前世界状态，在回复末尾用<S-summary>标签输出。');
+      lines.push('格式：时间：xxx / 区域：xxx / 在场角色+BUFF：xxx / 不在场角色：xxx /');
+      lines.push('处女膜状态：xxx / 做爱次数：xxx / 当前好感度：xxx / 身体外貌：xxx /');
+      lines.push('重要记忆点：- 角色名：记忆1|记忆2。所有字段必须填写，禁止省略。');
     }
 
     // 输出指令
@@ -585,37 +584,40 @@
     console.log('[WST] ✅ 状态已注入到发送框 (' + stateText.length + ' chars)');
   }
 
-  // 方法 B：修改聊天数组（兜底）
+  // 方法 B：修改聊天数组（主方案）+ Extension Prompt API（兜底）
   function injectStateToChatArray() {
     try {
       var ctx = SillyTavern.getContext();
-      if (!ctx.chat || !Array.isArray(ctx.chat)) return false;
 
       var state = loadState();
       if (!shouldInject(state)) return false;
 
       var stateText = buildStatePrompt(state);
 
-      // 先尝试 Extension Prompt API
+      // 主方案：直接修改聊天数组中的用户消息（更可靠，AI 在对话流中看到）
+      if (ctx.chat && Array.isArray(ctx.chat)) {
+        for (var i = ctx.chat.length - 1; i >= 0; i--) {
+          if (ctx.chat[i].is_user) {
+            var cleanMes = ctx.chat[i].mes.replace(/<WST_世界状态>[\s\S]*?<\/WST_世界状态>\n*/g, '');
+            if (cleanMes.indexOf('<WST_世界状态>') === -1) {
+              ctx.chat[i].mes = stateText + '\n\n' + cleanMes;
+              console.log('[WST] ✅ 状态已注入到聊天数组[' + i + '] (' + stateText.length + ' chars)');
+              return true;
+            }
+            break;
+          }
+        }
+      }
+
+      // 兜底：Extension Prompt API
       if (typeof ctx.setExtensionPrompt === 'function') {
         ctx.setExtensionPrompt('wst', stateText, 0);
-        console.log('[WST] ✅ 状态通过 Extension Prompt API 注入');
+        console.log('[WST] ✅ 状态通过 Extension Prompt API 注入（兜底）');
         return true;
       }
 
-      // 修改最后一条用户消息
-      for (var i = ctx.chat.length - 1; i >= 0; i--) {
-        if (ctx.chat[i].is_user) {
-          var cleanMes = ctx.chat[i].mes.replace(/<WST_世界状态>[\s\S]*?<\/WST_世界状态>\n*/g, '');
-          if (cleanMes.indexOf('<WST_世界状态>') === -1) {
-            ctx.chat[i].mes = stateText + '\n\n' + cleanMes;
-            console.log('[WST] ✅ 状态已注入到聊天数组[' + i + ']');
-          }
-          return true;
-        }
-      }
     } catch (e) {
-      console.warn('[WST] 聊天数组注入失败:', e.message);
+      console.warn('[WST] 注入失败:', e.message);
     }
     return false;
   }
@@ -731,9 +733,13 @@
             var added = mutations[m].addedNodes;
             for (var n = 0; n < added.length; n++) {
               var node = added[n];
-              if (node.nodeType === 1 && node.classList && node.classList.contains('mes')) {
-                // 新消息加入DOM，此时聊天数组已更新但API还没调用
+              if (node.nodeType !== 1) continue;
+              // 检测当前节点或子节点是否包含 .mes（酒馆可能包裹在div中）
+              var isMes = node.classList && node.classList.contains('mes');
+              var containsMes = node.querySelector && node.querySelector('.mes');
+              if (isMes || containsMes) {
                 lastStateSentHash = '';
+                // 同步执行，确保在API调用前完成
                 injectStateToChatArray();
                 console.log('[WST] DOM检测到新消息，已触发注入');
                 return;
