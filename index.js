@@ -251,10 +251,12 @@
     text = text.replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '');
 
     // 关键修复：先按字段标签拆分（处理AI把所有字段写在同一行的情况）
+    // 注意：长标签必须在短标签前面，确保"在场角色+BUFF："优先匹配
     var FIELD_LABELS = [
       '时间：', '时间:',
       '区域：', '区域:',
       '在场角色+BUFF：', '在场角色+BUFF:',
+      '在场角色：', '在场角色:',
       '不在场角色：', '不在场角色:',
       '处女膜状态：', '处女膜状态:',
       '做爱次数：', '做爱次数:',
@@ -289,7 +291,7 @@
       if (!currentLabel) return;
       if (currentLabel.indexOf('时间') === 0) state.time = (state.time ? state.time + ' ' : '') + currentValue;
       else if (currentLabel.indexOf('区域') === 0) state.location = (state.location ? state.location + ' ' : '') + currentValue;
-      else if (currentLabel.indexOf('在场角色') === 0 || currentLabel.indexOf('在场角色+BUFF') === 0) state.present = (state.present ? state.present + ' ' : '') + currentValue;
+      else if (currentLabel.indexOf('在场角色+BUFF') === 0 || currentLabel.indexOf('在场角色') === 0) state.present = (state.present ? state.present + ' ' : '') + currentValue;
       else if (currentLabel.indexOf('不在场角色') === 0) state.absent = (state.absent ? state.absent + ' ' : '') + currentValue;
       else if (currentLabel.indexOf('处女膜') === 0) state.hymen = (state.hymen ? state.hymen + ' ' : '') + currentValue;
       else if (currentLabel.indexOf('做爱') === 0) state.sexCount = (state.sexCount ? state.sexCount + ' ' : '') + currentValue;
@@ -685,11 +687,14 @@
         '处女膜状态：\n做爱次数：\n当前好感度：\n身体外貌：\n' +
         '重要记忆点：\n- 角色名：记忆1|记忆2\n\n' +
         '规则：\n' +
-        '1. 在场角色=对话中正在参与互动或当前场景中明确在场的角色。仅被提及但未实际出场的角色不算在场。\n' +
-        '2. 不在场角色=已在正文中出现过的角色，但因离开/分开/其他场景等原因与主角不在同一场景。尚未在正文中出现过的角色一律不列入。\n' +
-        '3. 处女膜状态、做爱次数、身体外貌只记录在场和不在场角色中的女性角色。\n' +
-        '4. 好感度系统=' + favorSys + '。\n' +
-        '5. 重要记忆每人≤6条，只记改变人生的事件，每条≤70字。';
+        '1. 在场与不在场互斥：同一角色不能同时出现在在场和不在场中。\n' +
+        '2. 在场角色=对话中正在参与互动或当前场景中明确在场的角色。仅被提及但未出场的角色不算。\n' +
+        '3. 不在场角色格式：角色名-在做什么（每个角色描述≤10字）。如"琴-在骑士团办公"。\n' +
+        '   不在场=已在正文中出现过，但因离开/分开/其他场景等原因与主角不在同一场景。\n' +
+        '   尚未在正文中出现过的角色一律不列入。\n' +
+        '4. 处女膜状态、做爱次数、身体外貌只记录在场和不在场角色中的女性角色。\n' +
+        '5. 好感度系统=' + favorSys + '。\n' +
+        '6. 重要记忆每人≤6条，只记改变人生的事件，每条≤70字。';
 
       console.log('[WST] 🤖 开始静默总结 (历史长度:' + historyText.length + ' chars)...');
 
