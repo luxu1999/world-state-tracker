@@ -4,6 +4,12 @@
   border-radius: 8px;
   padding: 12px;
   margin: 8px 0;
+  display: block;
+  width: auto;
+  min-height: unset;
+  height: auto;
+  overflow: visible;
+  box-sizing: border-box;
 }
 
 .wst-card__title {
