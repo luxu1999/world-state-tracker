@@ -19,9 +19,15 @@
 
   function buildCardHTML() {
     const lines = FIELDS.map(function (f) {
-      return '<div class="wst-card__line">' + f + '</div>';
+      return '<div class="wst-body__line">' + f + '</div>';
     }).join('');
-    return '<div class="wst-card"><div class="wst-card__title">状态追踪</div>' + lines + '</div>';
+    return (
+      '<div class="wst-header">' +
+        '<span class="wst-triangle"></span>' +
+        '状态追踪' +
+      '</div>' +
+      '<div class="wst-body">' + lines + '</div>'
+    );
   }
 
   function scan() {
@@ -29,14 +35,28 @@
     for (let i = 0; i < allMessages.length; i++) {
       const msg = allMessages[i];
       if (PROCESSED.has(msg)) continue;
-      if (msg.querySelector('.wst-card')) continue;
+      if (msg.querySelector('.wst-header')) continue;
       PROCESSED.add(msg);
 
       const temp = document.createElement('div');
       temp.innerHTML = buildCardHTML();
-      msg.appendChild(temp.firstChild);
+      // 先追加 body，再追加 header（header 在上方）
+      while (temp.firstChild) {
+        msg.appendChild(temp.firstChild);
+      }
     }
   }
+
+  // 事件委托：点击蓝色头部切换展开/收缩
+  document.addEventListener('click', function (e) {
+    const header = e.target.closest('.wst-header');
+    if (!header) return;
+
+    const body = header.nextElementSibling;
+    if (!body || !body.classList.contains('wst-body')) return;
+
+    header.classList.toggle('wst-collapsed');
+  });
 
   // 官方示例使用 jQuery 初始化
   jQuery(async function () {
