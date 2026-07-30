@@ -4,5 +4,17 @@
   border-radius: 8px;
   padding: 12px;
   margin: 8px 0;
-  min-height: 40px;
+}
+
+.wst-card__title {
+  font-weight: bold;
+  font-size: 14px;
+  margin-bottom: 8px;
+  color: #333;
+}
+
+.wst-card__line {
+  font-size: 13px;
+  color: #333;
+  line-height: 1.8;
 }
