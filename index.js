@@ -374,9 +374,12 @@
     // 首次回溯：状态全空但有聊天历史时，让AI根据已有剧情补齐
     if (isFirstTimeState(state) && hasChatHistory()) {
       lines.push('');
-      lines.push('⚠️【首次状态回溯】当前世界状态为空。请仔细阅读上述全部聊天历史，');
-      lines.push('根据已有剧情推导并补齐当前的时间、区域、角色状态、好感度、身体外貌等信息。');
-      lines.push('不要留空。重要记忆点根据已有剧情提取（每人≤6条，只记录改变人生的事件，≤70字）。');
+      lines.push('【重要指令：首次状态回溯】');
+      lines.push('当前世界状态为空。你必须查阅上方的全部聊天历史，推导并输出当前的世界状态。');
+      lines.push('在回复末尾用 <S-summary> 标签输出，每个字段都必须填入根据剧情推导的具体值：');
+      lines.push('时间（根据剧情推导日期时间）、区域（故事发生地点）、在场角色+BUFF（仅世界书中角色）、');
+      lines.push('不在场角色、处女膜状态、做爱次数、当前好感度（按好感系统计算）、身体外貌、重要记忆点。');
+      lines.push('禁止留空。这是强制要求。');
     }
 
     // 输出指令
@@ -479,6 +482,20 @@
       match = html.match(patterns[i]);
       if (match) break;
     }
+
+    // 兜底：从纯文本提取（某些酒馆版本会去掉HTML标签）
+    if (!match) {
+      var rawText = mesTextEl.textContent || mesTextEl.innerText || '';
+      var textPatterns = [
+        /<S-summary>([\s\S]*?)<\/S-summary>/i,
+        /S-summary[：:]\s*\n?([\s\S]*?)(?=\n\n\S|$)/i
+      ];
+      for (var j = 0; j < textPatterns.length; j++) {
+        match = rawText.match(textPatterns[j]);
+        if (match) { console.log('[WST] 纯文本兜底匹配成功'); break; }
+      }
+    }
+
     if (!match) return null;
 
     mesTextEl.innerHTML = html.replace(match[0],
@@ -498,6 +515,14 @@
     if (!mesText) return;
 
     var newState = extractSummaryFromDOM(mesText);
+
+    if (!newState) {
+      // 诊断：提取失败时记录原始内容前100字符
+      var rawSample = (mesText.textContent || '').substring(0, 100);
+      if (rawSample.indexOf('S-summary') !== -1 || rawSample.indexOf('summary') !== -1) {
+        console.log('[WST] ⚠️ 检测到可能含S-summary但提取失败，原文片段:', rawSample);
+      }
+    }
 
     if (newState) {
       var oldState = loadState();
@@ -698,12 +723,34 @@
         timer = setTimeout(scan, DEBOUNCE_MS);
       });
 
+      // 方法 C（最可靠）：监听新消息加入DOM → 赶在API调用前修改聊天数组
+      var chatContainer = document.querySelector('#chat');
+      if (chatContainer) {
+        var injectionObserver = new MutationObserver(function (mutations) {
+          for (var m = 0; m < mutations.length; m++) {
+            var added = mutations[m].addedNodes;
+            for (var n = 0; n < added.length; n++) {
+              var node = added[n];
+              if (node.nodeType === 1 && node.classList && node.classList.contains('mes')) {
+                // 新消息加入DOM，此时聊天数组已更新但API还没调用
+                lastStateSentHash = '';
+                injectStateToChatArray();
+                console.log('[WST] DOM检测到新消息，已触发注入');
+                return;
+              }
+            }
+          }
+        });
+        injectionObserver.observe(chatContainer, { childList: true });
+        console.log('[WST] ✅ DOM观察者已就绪');
+      }
+
       es.on(et.MESSAGE_SENT, function () {
         lastStateSentHash = '';
-        // 兜底：如果 DOM 拦截没生效，用聊天数组注入
+        // 兜底
         setTimeout(function () {
           injectStateToChatArray();
-        }, 150);
+        }, 100);
       });
 
       es.on(et.GENERATION_STARTED, function () {
