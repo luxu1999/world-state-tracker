@@ -478,15 +478,13 @@
       }
     } else {
       var existingState = loadState();
-      if (hasContent(existingState)) {
-        var existingBody = msg.querySelector('.wst-body');
-        if (existingBody) {
-          populateCard(existingBody, existingState);
-        } else {
-          var temp = document.createElement('div');
-          temp.innerHTML = buildCardHTML(existingState);
-          while (temp.firstChild) msg.appendChild(temp.firstChild);
-        }
+      var existingBody = msg.querySelector('.wst-body');
+      if (existingBody) {
+        populateCard(existingBody, existingState);
+      } else {
+        var temp = document.createElement('div');
+        temp.innerHTML = buildCardHTML(existingState);
+        while (temp.firstChild) msg.appendChild(temp.firstChild);
       }
     }
   }
