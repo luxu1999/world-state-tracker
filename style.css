@@ -1,10 +1,10 @@
-/* 状态追踪头部（蓝色框） */
+/* ========== 状态追踪头部（蓝色框） ========== */
 .wst-header {
   background: #dbeafe !important;
   border: 2px solid #93c5fd !important;
   border-radius: 8px;
   padding: 8px 12px;
-  margin: 8px 0 0 0;
+  margin: 12px 0 0 0;
   cursor: pointer;
   user-select: none;
   display: flex;
@@ -13,13 +13,14 @@
   font-size: 14px;
   font-weight: bold;
   color: #1e40af;
+  transition: background 0.2s;
 }
 
 .wst-header:hover {
   background: #bfdbfe !important;
 }
 
-/* 三角形箭头 */
+/* ========== 三角形箭头 ========== */
 .wst-triangle {
   display: inline-block;
   width: 0;
@@ -31,28 +32,58 @@
   flex-shrink: 0;
 }
 
-/* 收缩状态：三角指向右边 */
+/* 收缩时三角指向右边 */
 .wst-collapsed .wst-triangle {
   transform: rotate(-90deg);
 }
 
-/* 状态内容区（粉色框） */
+/* ========== 状态内容区（粉色框） ========== */
 .wst-body {
-  background: pink !important;
-  border: 2px solid #e0a0b0 !important;
+  background: #ffe4e8 !important;
+  border: 2px solid #f0a0b8 !important;
   border-top: none;
   border-radius: 0 0 8px 8px;
-  padding: 12px;
+  padding: 10px 12px;
   margin: 0 0 8px 0;
+  transition: max-height 0.3s ease;
 }
 
+/* ========== 状态行 ========== */
 .wst-body__line {
   font-size: 13px;
   color: #333;
   line-height: 1.8;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 3px;
+  transition: background 0.15s;
 }
 
-/* 收缩时隐藏内容 */
+.wst-body__line:hover {
+  background: rgba(200, 50, 80, 0.08);
+}
+
+/* ========== 角色名高亮 ========== */
+.wst-char-name {
+  font-weight: bold;
+  color: #c0392b;
+  background: rgba(192, 57, 43, 0.1);
+  padding: 1px 5px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
+/* ========== 折叠状态 ========== */
 .wst-collapsed + .wst-body {
   display: none;
+}
+
+/* ========== 注入状态标识（聊天区不显示） ========== */
+.wst-injected-state {
+  display: none;
+}
+
+/* ========== 隐藏原始 S-summary ========== */
+.wst-raw-summary {
+  display: none !important;
 }
