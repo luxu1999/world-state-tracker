@@ -878,22 +878,15 @@
       es.on(et.CHARACTER_MESSAGE_RENDERED, function () {
         clearTimeout(timer);
         lastStateSentHash = '';
-        timer = setTimeout(scan, DEBOUNCE_MS);
-      });
-
-      // AI回复生成完毕后，触发静默总结提取世界状态
-      es.on(et.GENERATION_ENDED, function () {
-        setTimeout(function () {
+        timer = setTimeout(function () {
+          scan();
+          // 角色消息渲染完成后触发静默总结（仅主对话，不会被generateQuietPrompt触发）
           triggerSummarize();
-        }, 600);
+        }, DEBOUNCE_MS);
       });
 
       es.on(et.MESSAGE_SENT, function () {
         lastStateSentHash = '';
-        injectStateToPrompt();
-      });
-
-      es.on(et.GENERATION_STARTED, function () {
         injectStateToPrompt();
       });
 
