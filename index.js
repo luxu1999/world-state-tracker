@@ -65,6 +65,35 @@
       (state.memories && Object.keys(state.memories).length > 0));
   }
 
+  // 状态完全为空（从未被填充过）
+  function isFirstTimeState(state) {
+    if (!state) return true;
+    return !state.time && !state.location && !state.present &&
+      !state.absent && !state.hymen && !state.sexCount &&
+      !state.affection && !state.appearance &&
+      (!state.memories || Object.keys(state.memories).length === 0);
+  }
+
+  // 聊天是否有对话历史（不只是初始问候）
+  function hasChatHistory() {
+    try {
+      var ctx = SillyTavern.getContext();
+      if (ctx.chat && Array.isArray(ctx.chat)) {
+        var count = 0;
+        for (var i = 0; i < ctx.chat.length; i++) {
+          if (ctx.chat[i].mes && ctx.chat[i].mes.trim()) count++;
+        }
+        return count >= 2;
+      }
+      return false;
+    } catch (e) { return false; }
+  }
+
+  // 是否需要注入状态（有内容 或 首次回溯触发）
+  function shouldInject(state) {
+    return hasContent(state) || (isFirstTimeState(state) && hasChatHistory());
+  }
+
   function hashState(state) {
     return JSON.stringify(state).length + '_' + (state.time || '') + '_' + (state.location || '');
   }
@@ -342,6 +371,14 @@
     lines.push('[好感度系统]：' + favorSys);
     lines.push('规则：「当前好感度」必须严格按照上述好感度系统来计算和更新。');
 
+    // 首次回溯：状态全空但有聊天历史时，让AI根据已有剧情补齐
+    if (isFirstTimeState(state) && hasChatHistory()) {
+      lines.push('');
+      lines.push('⚠️【首次状态回溯】当前世界状态为空。请仔细阅读上述全部聊天历史，');
+      lines.push('根据已有剧情推导并补齐当前的时间、区域、角色状态、好感度、身体外貌等信息。');
+      lines.push('不要留空。重要记忆点根据已有剧情提取（每人≤6条，只记录改变人生的事件，≤70字）。');
+    }
+
     // 输出指令
     lines.push('');
     lines.push('请在回复末尾用 <S-summary> 标签输出更新后的世界状态。');
@@ -511,7 +548,7 @@
     if (textarea.value.indexOf('<WST_世界状态>') !== -1) return;
 
     var state = loadState();
-    if (!hasContent(state)) return;
+    if (!shouldInject(state)) return;
 
     // 检查是否和上次注入的状态相同（避免连续重复注入）
     var currentHash = hashState(state);
@@ -530,7 +567,7 @@
       if (!ctx.chat || !Array.isArray(ctx.chat)) return false;
 
       var state = loadState();
-      if (!hasContent(state)) return false;
+      if (!shouldInject(state)) return false;
 
       var stateText = buildStatePrompt(state);
 
