@@ -60,6 +60,29 @@
     } catch (e) { return 'default'; }
   }
 
+  // 获取用户扮演的角色名（排除用）
+  function getUserPersonaName() {
+    try {
+      var ctx = SillyTavern.getContext();
+      var name = ctx.name1 || '';
+      if (name && name !== '用户' && name !== 'User') return name.trim();
+      // 也检查 persona 设置
+      if (ctx.persona && ctx.persona.name && ctx.persona.name.trim()) {
+        return ctx.persona.name.trim();
+      }
+      return '';
+    } catch(e) { return ''; }
+  }
+
+  // 从文本中过滤掉用户扮演的角色名
+  function removeUserFromText(text) {
+    var userName = getUserPersonaName();
+    if (!userName || !text) return text;
+    // 匹配 "角色名-BUFF描述" 或 "角色名（BUFF）" 等
+    var re = new RegExp('(^|[，,、\\s]+)' + userName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?:-[^，,、\\n]*)?(?=[，,、\\s]|$)', 'g');
+    return text.replace(re, '$1').replace(/^[，,、\s]+|[，,、\s]+$/g, '');
+  }
+
   function hasContent(state) {
     if (!state) return false;
     return !!(state.time || state.location || state.present ||
@@ -124,9 +147,36 @@
   }
 
   function saveState(state) {
+    // 保存前过滤用户扮演角色
+    var clean = filterUserFromState(state);
     try {
-      localStorage.setItem(STORAGE_PREFIX + getChatId(), JSON.stringify(state));
+      localStorage.setItem(STORAGE_PREFIX + getChatId(), JSON.stringify(clean));
     } catch (e) { console.warn('[WST] 保存状态失败:', e); }
+  }
+
+  // 过滤掉用户扮演角色
+  function filterUserFromState(state) {
+    var userName = getUserPersonaName();
+    if (!userName || !state) return state;
+    var copy = {
+      time: state.time || '',
+      location: state.location || '',
+      present: removeUserFromText(state.present || ''),
+      absent: removeUserFromText(state.absent || ''),
+      hymen: state.hymen || '',
+      sexCount: state.sexCount || '',
+      affection: state.affection || '',
+      appearance: state.appearance || '',
+      memories: {}
+    };
+    // 过滤记忆中的用户角色
+    var chars = Object.keys(state.memories || {});
+    for (var i = 0; i < chars.length; i++) {
+      if (chars[i] !== userName) {
+        copy.memories[chars[i]] = (state.memories[chars[i]] || []).slice();
+      }
+    }
+    return copy;
   }
 
   // ==================== 世界书读取 ====================
@@ -391,6 +441,7 @@
     var wbData = getWorldBookData();
     var wbCharKeys = wbData.allKeys;
     var favorSys = wbData.favorabilitySystem || getDefaultFavorabilitySystem();
+    var userName = getUserPersonaName();
 
     var lines = [];
     lines.push('<WST_世界状态>');
@@ -414,6 +465,15 @@
       }
     }
 
+    // 核心约束规则
+    lines.push('');
+    lines.push('[追踪规则]：');
+    lines.push('1. 仅追踪女性角色，男性角色不出现在任何字段中。');
+    if (userName) lines.push('2. 用户扮演的角色「' + userName + '」不追踪，任何字段不出现。');
+    lines.push('3. 在场角色 = 当前场景（最近消息对话场景）中出现的所有女性角色。');
+    lines.push('4. 不在场角色 = 之前出现过但当前不在主角所在场景的女性角色。');
+    lines.push('   格式：角色名-在做什么（≤10字）。当前场景中的角色绝不能误判为不在场。');
+
     // 世界书角色清单
     if (wbCharKeys.length > 0) {
       lines.push('');
@@ -434,6 +494,7 @@
       lines.push('格式：时间：xxx / 区域：xxx / 在场角色+BUFF：xxx / 不在场角色：xxx /');
       lines.push('处女膜状态：xxx / 做爱次数：xxx / 当前好感度：xxx / 身体外貌：xxx /');
       lines.push('重要记忆点：- 角色名：记忆1|记忆2。所有字段必须填写，禁止省略。');
+      lines.push('注意：仅追踪女性角色；' + (userName ? '排除用户角色「' + userName + '」；' : '') + '在场角色=当前场景中的女性角色。');
     }
 
     // 输出指令
@@ -680,21 +741,54 @@
       var wbNote = wbData.allKeys.length > 0 ? '仅限世界书角色：' + wbData.allKeys.join('、') + '。' : '';
 
       var systemMsg = '你是世界状态追踪器。根据聊天记录提取当前世界状态。只输出状态，不要解释。';
+
+      // 获取用户名用于排除说明
+      var userName = getUserPersonaName();
+      var userExcludeNote = userName ? '用户扮演的角色「' + userName + '」不追踪，所有字段中都不出现。' : '';
+
       var userMsg = '聊天记录：\n' + historyText + '\n\n' +
         '请按以下格式输出当前世界状态：\n' +
         '时间：（格式：xxxx年xx月xx日xx时xx分。如无明确时间，根据剧情合理推断，不要留空）\n' +
-        '区域：\n在场角色+BUFF：' + wbNote + '\n不在场角色：\n' +
-        '处女膜状态：\n做爱次数：\n当前好感度：\n身体外貌：\n' +
-        '重要记忆点：\n- 角色名：记忆1|记忆2\n\n' +
-        '规则：\n' +
-        '1. 在场与不在场互斥：同一角色不能同时出现在在场和不在场中。\n' +
-        '2. 在场角色=对话中正在参与互动或当前场景中明确在场的角色。仅被提及但未出场的角色不算。\n' +
-        '3. 不在场角色格式：角色名-在做什么（每个角色描述≤10字）。如"琴-在骑士团办公"。\n' +
-        '   不在场=已在正文中出现过，但因离开/分开/其他场景等原因与主角不在同一场景。\n' +
-        '   尚未在正文中出现过的角色一律不列入。\n' +
-        '4. 处女膜状态、做爱次数、身体外貌只记录在场和不在场角色中的女性角色。\n' +
-        '5. 好感度系统=' + favorSys + '。\n' +
-        '6. 重要记忆每人≤6条，只记改变人生的事件，每条≤70字。';
+        '区域：\n' +
+        '在场角色+BUFF：\n' +
+        '不在场角色：\n' +
+        '处女膜状态：\n' +
+        '做爱次数：\n' +
+        '当前好感度：\n' +
+        '身体外貌：\n' +
+        '重要记忆点：\n' +
+        '- 角色名：记忆1|记忆2\n\n' +
+        '★★★ 核心规则（必须严格遵守）★★★\n\n' +
+        '【规则0：仅追踪女性角色】\n' +
+        '   所有字段（在场角色、不在场角色、处女膜状态、做爱次数、身体外貌、当前好感度、重要记忆点）\n' +
+        '   仅记录女性角色信息。男性角色不出现。\n\n' +
+        (userName ? '【规则0.5：排除用户角色】\n   「' + userName + '」是用户扮演的角色，无论男女，任何字段中都不出现此角色。\n\n' : '') +
+        '【规则1：在场/不在场的核心判断标准】\n' +
+        '  在场角色 = 查看最近几条消息的对话场景，在该场景中出现的所有女性角色都是在场角色。\n' +
+        '  判断方法：如果角色在说话、被他人对话、在场景中有动作描写，她就在场。\n' +
+        '  关键：主角当前所处的场景就是"在场"场景。场景中所有女性均是在场角色。\n' +
+        '  示例：\n' +
+        '    消息中琴和主角在骑士团办公室对话，芭芭拉走进来打招呼 → 在场角色=琴、芭芭拉\n' +
+        '    消息中主角和琴在野外战斗，芭芭拉在远处施法 → 在场角色=琴、芭芭拉\n' +
+        '    消息中主角独自在酒馆，回想起昨天和琴的对话 → 在场角色=无（琴不在场景中）\n\n' +
+        '【规则2：不在场角色的判断标准】\n' +
+        '  不在场角色 = 之前在正文中出现过的女性角色，但当前不在主角所在场景。\n' +
+        '  当前场景中出现的角色绝不能被误判为不在场！\n' +
+        '  从未在正文中出现过的角色一律不列入不在场。\n' +
+        '  格式：角色名-在做什么（每个角色≤10字），如"琴-在骑士团办公"。\n\n' +
+        '【规则3：在场与不在场互斥】\n' +
+        '  同一角色绝对不能同时出现在两边。如果在场角色列了某角色，不在场绝对不能列她。\n\n' +
+        (wbData.allKeys.length > 0 ? '【规则4：世界书角色约束】\n   在场/不在场中只能出现世界书角色：' + wbData.allKeys.join('、') + '。\n   非世界书角色不列入。\n\n' : '') +
+        '【规则5：好感度系统】\n' +
+        '  好感度系统=' + favorSys + '。\n\n' +
+        '【规则6：重要记忆点】\n' +
+        '  每人≤6条，只记改变人生的事件（死亡、初吻、觉醒、背叛、重伤等），每条≤70字。\n' +
+        '  日常琐事（吃了什么、走了几步路等）不记录。\n\n' +
+        '【输出前自检】在你输出<S-summary>之前，请再次确认：\n' +
+        '  □ 是否所有在场角色都正确识别了？（检查最近消息中所有出现的女性角色）\n' +
+        '  □ 当前场景中的角色是否被错误分到了"不在场角色"？\n' +
+        '  □ 不在场角色是否为"之前出现过但现在不在"？\n' +
+        '  □ 是否排除了用户角色和所有男性角色？';
 
       console.log('[WST] 🤖 开始静默总结 (历史长度:' + historyText.length + ' chars)...');
 
@@ -724,8 +818,10 @@
         if (newState && (newState.time || newState.location || newState.present || newState.absent)) {
           var oldState = loadState();
           var merged = mergeState(oldState, newState);
+          // 过滤用户扮演角色
+          merged = filterUserFromState(merged);
           saveState(merged);
-          console.log('[WST] ✅ 状态已更新 - 时间:', merged.time, '| 区域:', merged.location);
+          console.log('[WST] ✅ 状态已更新 - 时间:', merged.time, '| 区域:', merged.location, '| 在场:', merged.present, '| 不在场:', merged.absent);
 
           // 只更新最后一条AI消息的卡片（不碰历史消息）
           var allMes = document.querySelectorAll('.mes');
@@ -860,7 +956,7 @@
   }
 
   jQuery(async function () {
-    console.log('[WST] 🚀 世界状态追踪器 v2.2.0 初始化...');
+    console.log('[WST] 🚀 世界状态追踪器 v3.1.0 初始化...');
     currentChatId = getChatId();
     cleanLegacyWSTTags();
 
