@@ -510,6 +510,9 @@
     if (PROCESSED.has(msg)) return;
     PROCESSED.add(msg);
 
+    // 只在 AI/角色消息上显示状态卡片，跳过用户消息
+    var isCharMsg = msg.querySelector('.mes_avatar, .avatar, [class*="char"]') !== null;
+    // 如果连 .mes_text 都没有（非角色消息结构），跳过
     var mesText = msg.querySelector('.mes_text');
     if (!mesText) return;
 
@@ -590,23 +593,35 @@
       var ctx = SillyTavern.getContext();
 
       var state = loadState();
-      if (!shouldInject(state)) return false;
+      if (!shouldInject(state)) { console.log('[WST] shouldInject=false，跳过'); return false; }
 
       var stateText = buildStatePrompt(state);
 
-      // 主方案：直接修改聊天数组中的用户消息（更可靠，AI 在对话流中看到）
+      // 主方案：直接修改聊天数组中的用户消息
       if (ctx.chat && Array.isArray(ctx.chat)) {
+        var foundUser = false;
         for (var i = ctx.chat.length - 1; i >= 0; i--) {
-          if (ctx.chat[i].is_user) {
-            var cleanMes = ctx.chat[i].mes.replace(/<WST_世界状态>[\s\S]*?<\/WST_世界状态>\n*/g, '');
+          var msg = ctx.chat[i];
+          // 兼容不同酒馆版本的 is_user / role / name 属性
+          if (msg.is_user || msg.role === 'user' || (msg.name && msg.name === (ctx.name1 || ''))) {
+            foundUser = true;
+            var cleanMes = msg.mes.replace(/<WST_世界状态>[\s\S]*?<\/WST_世界状态>\n*/g, '');
             if (cleanMes.indexOf('<WST_世界状态>') === -1) {
-              ctx.chat[i].mes = stateText + '\n\n' + cleanMes;
+              msg.mes = stateText + '\n\n' + cleanMes;
               console.log('[WST] ✅ 状态已注入到聊天数组[' + i + '] (' + stateText.length + ' chars)');
               return true;
             }
             break;
           }
         }
+        if (!foundUser) {
+          console.log('[WST] ⚠️ chat数组长度=' + ctx.chat.length + '，但未找到用户消息。最后5条属性:');
+          for (var j = Math.max(0, ctx.chat.length - 5); j < ctx.chat.length; j++) {
+            console.log('  [' + j + '] is_user=' + ctx.chat[j].is_user + ' role=' + ctx.chat[j].role + ' name=' + ctx.chat[j].name + ' is_system=' + ctx.chat[j].is_system);
+          }
+        }
+      } else {
+        console.log('[WST] ctx.chat不可用，类型:', typeof ctx.chat, 'Array.isArray:', Array.isArray(ctx.chat));
       }
 
       // 兜底：Extension Prompt API
