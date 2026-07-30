@@ -43,6 +43,9 @@
     { key: 'memories',   label: '重要记忆点：' },
   ];
 
+  // 每消息独立状态快照（避免所有卡片同步更新）
+  var MESSAGE_STATES = new WeakMap();
+
   // ==================== 工具函数 ====================
   function escapeHTML(s) {
     return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -560,9 +563,14 @@
     if (PROCESSED.has(msg)) return;
     PROCESSED.add(msg);
 
-    // 只在 AI/角色消息上显示状态卡片，跳过用户消息
-    var isCharMsg = msg.querySelector('.mes_avatar, .avatar, [class*="char"]') !== null;
-    // 如果连 .mes_text 都没有（非角色消息结构），跳过
+    // 跳过用户消息：用户消息没有角色头像
+    var mesAvatar = msg.querySelector('.mes_avatar, .avatar, img.avatar');
+    var isUserMsg = msg.querySelector('.mes_user, [data-isuser="true"]') !== null;
+    var isSystemMsg = msg.classList.contains('system_mes');
+    if (isUserMsg || isSystemMsg) return;
+    // 如果没有头像且不是系统消息，也视为用户消息
+    if (!mesAvatar && !isSystemMsg) return;
+
     var mesText = msg.querySelector('.mes_text');
     if (!mesText) return;
 
@@ -577,10 +585,12 @@
     }
 
     if (newState) {
+      // 新状态：存储到该消息（作为历史快照）并更新全局
+      MESSAGE_STATES.set(msg, newState);
       var oldState = loadState();
       var merged = mergeState(oldState, newState);
       saveState(merged);
-      console.log('[WST] 状态已更新');
+      console.log('[WST] 消息状态已存储（快照）');
 
       var existingBody = msg.querySelector('.wst-body');
       if (existingBody) {
@@ -591,14 +601,22 @@
         while (temp.firstChild) msg.appendChild(temp.firstChild);
       }
     } else {
-      var existingState = loadState();
-      var existingBody = msg.querySelector('.wst-body');
-      if (existingBody) {
-        populateCard(existingBody, existingState);
-      } else {
-        var temp = document.createElement('div');
-        temp.innerHTML = buildCardHTML(existingState);
-        while (temp.firstChild) msg.appendChild(temp.firstChild);
+      // 没有 S-summary：检查该消息是否有历史快照
+      var snapState = MESSAGE_STATES.get(msg);
+      if (!snapState) {
+        // 没有快照：使用当前全局状态（仅对最新消息）
+        snapState = loadState();
+        if (hasContent(snapState)) MESSAGE_STATES.set(msg, snapState);
+      }
+      if (hasContent(snapState)) {
+        var existingBody = msg.querySelector('.wst-body');
+        if (existingBody) {
+          populateCard(existingBody, snapState);
+        } else {
+          var temp = document.createElement('div');
+          temp.innerHTML = buildCardHTML(snapState);
+          while (temp.firstChild) msg.appendChild(temp.firstChild);
+        }
       }
     }
   }
@@ -645,7 +663,8 @@
       var systemMsg = '你是世界状态追踪器。根据聊天记录提取当前世界状态。只输出状态，不要解释。';
       var userMsg = '聊天记录：\n' + historyText + '\n\n' +
         '请按以下格式输出当前世界状态：\n' +
-        '时间：\n区域：\n在场角色+BUFF：' + wbNote + '\n不在场角色：\n' +
+        '时间：（格式：xxxx年xx月xx日xx时xx分。如"2024年03月15日14时30分"）\n' +
+        '区域：\n在场角色+BUFF：' + wbNote + '\n不在场角色：\n' +
         '处女膜状态：\n做爱次数：\n当前好感度：\n身体外貌：\n' +
         '重要记忆点：\n- 角色名：记忆1|记忆2\n\n' +
         '规则：好感度系统=' + favorSys + '。重要记忆每人≤6条，只记改变人生的事件，每条≤70字。';
@@ -681,10 +700,15 @@
           saveState(merged);
           console.log('[WST] ✅ 状态已更新 - 时间:', merged.time, '| 区域:', merged.location);
 
-          // 刷新所有卡片
-          var allBodies = document.querySelectorAll('.wst-body');
-          for (var j = 0; j < allBodies.length; j++) {
-            populateCard(allBodies[j], merged);
+          // 只更新最后一条AI消息的卡片（不碰历史消息）
+          var allMes = document.querySelectorAll('.mes');
+          for (var j = allMes.length - 1; j >= 0; j--) {
+            var card = allMes[j].querySelector('.wst-body');
+            if (card) {
+              MESSAGE_STATES.set(allMes[j], merged);
+              populateCard(card, merged);
+              break;
+            }
           }
           lastStateSentHash = '';
         } else {
@@ -778,11 +802,14 @@
         state[key] = newVal;
       }
       saveState(state);
-      lastStateSentHash = ''; // 强制下次发送
+      lastStateSentHash = '';
 
-      var allBodies = document.querySelectorAll('.wst-body');
-      for (var j = 0; j < allBodies.length; j++) {
-        populateCard(allBodies[j], state);
+      // 只刷新当前编辑所在消息的卡片
+      var msgEl = line.closest('.mes');
+      if (msgEl) {
+        MESSAGE_STATES.set(msgEl, state);
+        var card = msgEl.querySelector('.wst-body');
+        if (card) populateCard(card, state);
       }
     }
   });
