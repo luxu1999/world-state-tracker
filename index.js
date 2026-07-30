@@ -194,7 +194,8 @@
   function loadState() {
     try {
       var raw = localStorage.getItem(STORAGE_PREFIX + getChatId());
-      return raw ? JSON.parse(raw) : createEmptyState();
+      var state = raw ? JSON.parse(raw) : createEmptyState();
+      return sanitizeState(state);
     } catch (e) { return createEmptyState(); }
   }
 
@@ -487,7 +488,83 @@
   }
 
   // ==================== 合并状态 ====================
-  function mergeState(oldState, newState) {
+  // 从文本中提取角色名列表（去掉BUFF括号和分隔符）
+  function extractCharacterNames(text) {
+    if (!text) return [];
+    // 去掉所有括号内容（BUFF）
+    var clean = text.replace(/[（(][^)）]*[)）]/g, '');
+    // 按分隔符拆开
+    var parts = clean.split(/[|｜,，、\s]+/).filter(Boolean);
+    var names = [];
+    for (var i = 0; i < parts.length; i++) {
+      var n = parts[i].trim();
+      if (n && n.length >= 1 && !/^[-·•]$/.test(n)) names.push(n);
+    }
+    return names;
+  }
+
+  // 检查文本是否是泛称条目（非具体角色名）
+  var GENERIC_PATTERNS = [
+    /七神/, /各国角色/, /众人/, /所有人/, /其他人/, /其他角色/,
+    /全城/, /全体/, /各路/, /各方/, /诸位/, /各位/, /大家/,
+    /等[人角色]/, /一众/, /群[众臣英]/,
+    /^艾莉丝$/   // 常见于AI瞎编的非世界书角色
+  ];
+  function isGenericEntry(name) {
+    if (!name || name.length < 1) return true;
+    for (var i = 0; i < GENERIC_PATTERNS.length; i++) {
+      if (GENERIC_PATTERNS[i].test(name)) return true;
+    }
+    return false;
+  }
+
+  // 安全网：清理状态中的矛盾
+  // - 在场角色中出现的角色，强制从不在场角色中移除
+  // - 清理不在场角色中的泛称条目
+  function sanitizeState(state) {
+    if (!state) return state;
+
+    // 从在场角色中提取角色名
+    var presentNames = extractCharacterNames(state.present || '');
+
+    // 清理不在场角色
+    if (state.absent) {
+      // 按分隔符拆开每个条目
+      var absentParts = (state.absent || '').split(/[，,、]+/).map(function(s) { return s.trim(); }).filter(Boolean);
+      var cleanedAbsent = [];
+      for (var i = 0; i < absentParts.length; i++) {
+        var part = absentParts[i];
+        // 提取该条目的角色名（去掉"-在做什么"后缀）
+        var charName = part.split(/[-—]/)[0].trim();
+        // 去掉角色名中的BUFF括号
+        charName = charName.replace(/[（(][^)）]*[)）]/g, '').trim();
+
+        // 检查1: 是否泛称条目
+        if (isGenericEntry(charName)) {
+          console.log('[WST] 🧹 剔除泛称条目:', part);
+          continue;
+        }
+
+        // 检查2: 是否已经在在场角色中
+        var isPresent = false;
+        for (var j = 0; j < presentNames.length; j++) {
+          // 模糊匹配："琴·古恩希尔德"包含"琴"
+          if (charName.indexOf(presentNames[j]) !== -1 || presentNames[j].indexOf(charName) !== -1) {
+            isPresent = true;
+            console.log('[WST] 🧹 从不在场中剔除（已在在场）:', part, '←→', presentNames[j]);
+            break;
+          }
+        }
+
+        if (!isPresent) {
+          cleanedAbsent.push(part);
+        }
+      }
+      state.absent = cleanedAbsent.join('、');
+    }
+
+    return state;
+  }
     var merged = {
       time: newState.time || oldState.time || '',
       location: newState.location || oldState.location || '',
@@ -524,6 +601,9 @@
       }
       merged.memories = enforceMemoryLimits(mergedMemories);
     }
+
+    // 安全网：清理在场/不在场矛盾 + 泛称条目
+    merged = sanitizeState(merged);
     return merged;
   }
 
@@ -1052,7 +1132,7 @@
   }
 
   jQuery(async function () {
-    console.log('[WST] 🚀 世界状态追踪器 v3.2.0 初始化...');
+    console.log('[WST] 🚀 世界状态追踪器 v3.2.1 初始化...');
     currentChatId = getChatId();
     cleanLegacyWSTTags();
 
