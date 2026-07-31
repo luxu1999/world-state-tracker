@@ -576,6 +576,8 @@
 
     return state;
   }
+
+  function mergeState(oldState, newState) {
     var merged = {
       time: newState.time || oldState.time || '',
       location: newState.location || oldState.location || '',
