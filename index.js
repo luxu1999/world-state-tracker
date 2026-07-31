@@ -914,10 +914,36 @@
     }
   }
 
-  // ==================== 静默状态总结 ====================
+  // ==================== 静默状态总结（直接API调用） ====================
 
-  // 使用 generateQuietPrompt 静默生成世界状态（不显示在聊天中）
   var summarizeLock = false;
+
+  // 读取ST的API配置
+  function getAPIConfig() {
+    try {
+      var ctx = SillyTavern.getContext();
+      // ST 1.12+ 的API配置路径
+      if (ctx.onlineStatus) {
+        return {
+          url: ctx.onlineStatus.apiUrl || ctx.onlineStatus.custom_url || '',
+          key: ctx.onlineStatus.apiKey || ctx.onlineStatus.custom_api_key || '',
+          model: ctx.onlineStatus.model || ctx.onlineStatus.custom_model || ''
+        };
+      }
+      // 尝试其他路径
+      var powerUser = ctx.power_user;
+      if (powerUser) {
+        return {
+          url: powerUser.custom_url || '',
+          key: powerUser.api_key || powerUser.custom_api_key || '',
+          model: powerUser.custom_model || ''
+        };
+      }
+      return null;
+    } catch(e) {
+      return null;
+    }
+  }
 
   async function summarizeChatHistory() {
     if (summarizeLock) { console.log('[WST] 已有总结任务进行中，跳过'); return; }
@@ -927,10 +953,11 @@
       var ctx = SillyTavern.getContext();
       if (!ctx.chat || !Array.isArray(ctx.chat) || ctx.chat.length < 1) {
         console.log('[WST] 聊天记录不足，跳过总结');
+        summarizeLock = false;
         return;
       }
 
-      // 构建聊天历史文本（最后30条，覆盖更多历史）
+      // 构建聊天历史文本（最后30条）
       var recentMessages = ctx.chat.slice(-30);
       var historyText = '';
       for (var i = 0; i < recentMessages.length; i++) {
@@ -940,21 +967,20 @@
         if (text) historyText += role + '：' + text + '\n';
       }
 
-      if (!historyText.trim()) { console.log('[WST] 无有效聊天文本'); return; }
+      if (!historyText.trim()) { console.log('[WST] 无有效聊天文本'); summarizeLock = false; return; }
 
       var wbData = getWorldBookData();
       var favorSys = wbData.favorabilitySystem || getDefaultFavorabilitySystem();
       var userName = getUserPersonaName();
-
-      // 精简版prompt — 用===分隔线明确区分指令和数据，防止AI当作故事续写
       var userExclude = userName ? '排除用户角色「' + userName + '」。' : '';
       var wbConstraint = wbData.allKeys.length > 0 ? '仅限世界书角色：' + wbData.allKeys.join('、') + '。' : '';
 
-      var prompt = [
-        '========== 系统指令：世界状态提取（不要续写故事！只提取！）==========',
-        '',
-        '你是一个数据提取工具。阅读下方的聊天记录，提取当前世界状态。',
-        '直接输出<S-summary>格式，不要添加任何故事内容、不要续写、不要解释。',
+      // 构建总结prompt
+      var systemPrompt = '你是一个数据提取工具。你的唯一任务是从聊天记录中提取世界状态。你必须直接输出<S-summary>格式的状态数据。不要续写故事、不要解释、不要添加任何故事内容。';
+      var userPrompt = [
+        '========== 聊天记录（仅用于提取状态，不要续写！）==========',
+        historyText,
+        '========== 结束 ==========',
         '',
         '规则：',
         '- 仅追踪女性角色。' + userExclude,
@@ -964,7 +990,7 @@
         '- 好感度系统：' + favorSys,
         '- 重要记忆：每人≤6条，只记改变人生的事件，每条≤70字。',
         '',
-        '输出格式（严格按此，不要省略任何字段）：',
+        '输出格式（必须严格按照此格式，不要省略任何字段）：',
         '<S-summary>',
         '时间：',
         '区域：',
@@ -978,39 +1004,81 @@
         '- 角色名：记忆1|记忆2',
         '</S-summary>',
         '',
-        '========== 聊天记录 ==========',
-        historyText,
-        '========== 结束 ==========',
-        '',
         '现在输出<S-summary>：'
       ].join('\n');
 
-      console.log('[WST] 🤖 开始静默总结 (历史长度:' + historyText.length + ' chars)...');
-
-      var result = await ctx.generateQuietPrompt({
-        quietPrompt: prompt,
-        skipWIAN: true
-      });
-
-      // generateQuietPrompt 返回字符串或 { mes: "..." } 对象
+      // 先用 generateQuietPrompt 试一次（走ST内部路由，更可靠）
       var resultText = '';
-      if (typeof result === 'string') {
-        resultText = result;
-      } else if (result && typeof result === 'object') {
-        resultText = result.mes || result.text || result.content || '';
-        if (!resultText && Array.isArray(result) && result.length > 0) {
-          resultText = result[result.length - 1].mes || result[result.length - 1].content || '';
+      try {
+        console.log('[WST] 🤖 尝试 generateQuietPrompt (历史长度:' + historyText.length + ' chars)...');
+        var result = await ctx.generateQuietPrompt({
+          quietPrompt: systemPrompt + '\n\n' + userPrompt,
+          skipWIAN: true
+        });
+        if (typeof result === 'string') resultText = result;
+        else if (result && typeof result === 'object') {
+          resultText = result.mes || result.text || result.content || '';
+          if (!resultText && Array.isArray(result) && result.length > 0) {
+            resultText = result[result.length - 1].mes || result[result.length - 1].content || '';
+          }
+          if (!resultText && result.message) resultText = result.message;
         }
-        if (!resultText && result.message) resultText = result.message;
-        if (!resultText) resultText = JSON.stringify(result);
+      } catch (e) {
+        console.warn('[WST] generateQuietPrompt失败:', e.message);
+      }
+
+      // 检测是否为故事续写
+      var looksLikeStory = resultText.indexOf('时间') === -1 && resultText.indexOf('区域') === -1 && resultText.indexOf('在场') === -1;
+      
+      if (looksLikeStory || !resultText || resultText.length < 10) {
+        // generateQuietPrompt失效 → 尝试直接API调用（对标st-memory-enhancement）
+        console.log('[WST] ⚠️ generateQuietPrompt返回故事续写或无数据，尝试直接API调用...');
+        var apiConfig = getAPIConfig();
+        if (apiConfig && apiConfig.url && apiConfig.key) {
+          try {
+            var apiUrl = apiConfig.url.replace(/\/+$/, '') + '/v1/chat/completions';
+            console.log('[WST] 直接API调用: ' + apiUrl + ' model=' + apiConfig.model);
+            var apiResponse = await fetch(apiUrl, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + apiConfig.key
+              },
+              body: JSON.stringify({
+                model: apiConfig.model,
+                messages: [
+                  { role: 'system', content: systemPrompt },
+                  { role: 'user', content: userPrompt }
+                ],
+                temperature: 0.3,
+                max_tokens: 2000
+              }),
+              signal: AbortSignal.timeout(60000)
+            });
+            if (apiResponse.ok) {
+              var apiData = await apiResponse.json();
+              resultText = apiData.choices && apiData.choices[0] && apiData.choices[0].message
+                ? apiData.choices[0].message.content : '';
+              console.log('[WST] 直接API调用成功 (' + resultText.length + ' chars)');
+            } else {
+              console.warn('[WST] 直接API调用失败: HTTP ' + apiResponse.status);
+            }
+          } catch (e2) {
+            console.warn('[WST] 直接API调用异常:', e2.message);
+          }
+        } else {
+          console.log('[WST] ⚠️ 无法读取API配置，跳过直接API调用');
+        }
+      } else {
+        console.log('[WST] generateQuietPrompt返回有效数据 (' + resultText.length + ' chars)');
       }
 
       console.log('[WST] 总结原始返回 (' + resultText.length + ' chars):', resultText.substring(0, 300));
 
-      // 检测是否返回了故事续写（不含任何字段标签）
-      var looksLikeStory = resultText.indexOf('时间') === -1 && resultText.indexOf('区域') === -1 && resultText.indexOf('在场') === -1;
+      // 再次检测
+      looksLikeStory = resultText.indexOf('时间') === -1 && resultText.indexOf('区域') === -1 && resultText.indexOf('在场') === -1;
       if (looksLikeStory && resultText.length > 5) {
-        console.log('[WST] ⚠️ AI返回了故事续写而非总结，跳过（可能是模型不支持静默总结模式）');
+        console.log('[WST] ⚠️ 最终仍为故事续写，跳过');
         summarizeLock = false;
         return;
       }
@@ -1061,7 +1129,8 @@
   function injectStateToTextarea() { /* disabled */ }
 
   // 使用 setExtensionPrompt 注入状态（不修改聊天数组，不修改文本框）
-  function injectStateToPrompt() {
+  // 方式A：通过 setExtensionPrompt 注入（兼容旧版）
+  function injectStateViaExtensionPrompt() {
     var state = loadState();
     if (!shouldInject(state)) return;
     var firstTime = isFirstTimeState(state) && hasChatHistory();
@@ -1071,11 +1140,33 @@
       var ctx = SillyTavern.getContext();
       if (typeof ctx.setExtensionPrompt === 'function') {
         ctx.setExtensionPrompt('wst', stateText, 0);
-        console.log('[WST] ✅ 状态已注入到Prompt (' + stateText.length + ' chars)');
+        console.log('[WST] ✅ 状态已注入到ExtensionPrompt (' + stateText.length + ' chars)');
       }
     } catch (e) {
-      console.warn('[WST] Prompt注入失败:', e.message);
+      console.warn('[WST] ExtensionPrompt注入失败:', e.message);
     }
+  }
+
+  // 方式B：通过 CHAT_COMPLETION_PROMPT_READY 注入（对标st-memory-enhancement，直接操作chat数组）
+  function injectStateToChatArray(eventData) {
+    if (eventData.dryRun) return;
+    var state = loadState();
+    if (!shouldInject(state)) return;
+    var firstTime = isFirstTimeState(state) && hasChatHistory();
+    if (firstTime) console.log('[WST] 🆕 Chat数组注入（首次回溯）');
+    var stateText = buildStatePrompt(state);
+    try {
+      // 对标st-memory-enhancement：直接push到chat数组末尾
+      eventData.chat.push({ role: 'system', content: stateText });
+      console.log('[WST] ✅ 状态已注入到Chat数组 (' + stateText.length + ' chars)');
+    } catch (e) {
+      console.warn('[WST] Chat数组注入失败:', e.message);
+    }
+  }
+
+  // 兼容入口：优先用Chat数组注入，回退到ExtensionPrompt
+  function injectStateToPrompt() {
+    injectStateViaExtensionPrompt();
   }
 
   // ==================== 点击交互 ====================
@@ -1183,15 +1274,24 @@
         lastStateSentHash = '';
         timer = setTimeout(function () {
           scan();
-          // 角色消息渲染完成后触发静默总结（仅主对话，不会被generateQuietPrompt触发）
           triggerSummarize();
         }, DEBOUNCE_MS);
       });
 
-      es.on(et.MESSAGE_SENT, function () {
-        lastStateSentHash = '';
-        injectStateToPrompt();
-      });
+      // 对标st-memory-enhancement：用CHAT_COMPLETION_PROMPT_READY注入（直接操作chat数组）
+      if (et.CHAT_COMPLETION_PROMPT_READY) {
+        es.on(et.CHAT_COMPLETION_PROMPT_READY, function (eventData) {
+          injectStateToChatArray(eventData);
+        });
+        console.log('[WST] 使用 CHAT_COMPLETION_PROMPT_READY 事件注入');
+      } else {
+        // 回退到 MESSAGE_SENT + ExtensionPrompt（旧版ST）
+        es.on(et.MESSAGE_SENT, function () {
+          lastStateSentHash = '';
+          injectStateToPrompt();
+        });
+        console.log('[WST] 使用 MESSAGE_SENT 事件注入（旧版兼容）');
+      }
 
       es.on(et.CHAT_CHANGED, function () {
         currentChatId = getChatId();
