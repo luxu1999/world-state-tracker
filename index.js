@@ -201,7 +201,7 @@
 
   // ==================== 状态持久化（对标st-memory-enhancement：存在chatMetadata中） ====================
   // 数据跟随聊天对象，切换聊天时ST自动加载/保存，天然不污染
-  var WST_VERSION = '3.8.6'; // 版本号：更新后首次使用自动清理旧数据
+  var WST_VERSION = '3.8.7'; // 版本号：更新后首次使用自动清理旧数据
 
   function getChatMetadata() {
     try {
@@ -576,7 +576,7 @@
     var memSection = allText.match(/重要记忆点[：:]\s*\n?([\s\S]*?)$/);
     if (memSection) {
       var memText = memSection[1];
-      var charPattern = /[-•●◆▪▸►]\s*(.+?)[：:]\s*(.+)/g;
+      var charPattern = /[-•●◆▪▸►]?[ \t]*([^：:\n]{1,12})[：:]\s*(.+)/g;
       var match;
       while ((match = charPattern.exec(memText)) !== null) {
         var charName = match[1].trim();
@@ -978,12 +978,35 @@
     if (!rawText || rawText.length < 20) return null;
     // 从文本末尾取最后2000字符（状态通常在末尾）
     var tail = rawText.length > 2000 ? rawText.substring(rawText.length - 2000) : rawText;
-    // 尝试找"时间："或"时间:"作为起点
-    var timeIdx = tail.search(/时间[：:]/);
+    // 尝试找末尾的"时间："或"时间:"作为起点（lastIndexOf 优先取末尾状态块，避免正文中的时间字样）
+    var timeIdx = tail.lastIndexOf('时间：');
+    if (timeIdx === -1) timeIdx = tail.lastIndexOf('时间:');
     if (timeIdx === -1) return null;
     var stateText = tail.substring(timeIdx);
     console.log('[WST] 纯文本兜底提取 (' + stateText.length + ' chars):', stateText.substring(0, 100));
     return parseSummary(stateText);
+  }
+
+  // 隐藏消息正文末尾的纯文本状态块（避免状态文本显示在正文中，界面保持整洁）
+  function hideRawStateText(mesTextEl, rawText) {
+    try {
+      var timeIdx = rawText.lastIndexOf('时间：');
+      if (timeIdx === -1) timeIdx = rawText.lastIndexOf('时间:');
+      if (timeIdx === -1) return;
+      var stateText = rawText.substring(timeIdx);
+      var html = mesTextEl.innerHTML || '';
+      var escaped = escapeHTML(stateText);
+      var hi = html.lastIndexOf(escaped);
+      if (hi === -1) hi = html.lastIndexOf(stateText);
+      if (hi === -1) return;
+      var len = (hi === html.lastIndexOf(escaped)) ? escaped.length : stateText.length;
+      var before = html.substring(0, hi);
+      var after = html.substring(hi + len);
+      mesTextEl.innerHTML = before + '<span class="wst-raw-summary" style="display:none;">' + escaped + '</span>' + after;
+      console.log('[WST] 🙈 已隐藏正文末尾的状态文本 (' + stateText.length + ' chars)');
+    } catch(e) {
+      console.warn('[WST] 隐藏状态文本失败:', e.message);
+    }
   }
 
   // 获取消息纯文本（剔除已隐藏的原始摘要，避免兜底重复提取同一状态）
@@ -1078,7 +1101,12 @@
     if (!mesText) return null;
     var state = extractSummaryFromDOM(mesText);
     if (!state || !state.time) {
-      state = extractStateFromText(getCleanMessageText(mesText));
+      var rawText = getCleanMessageText(mesText);
+      state = extractStateFromText(rawText);
+      if (state && (state.time || state.location || state.present)) {
+        // 纯文本提取成功 → 隐藏正文末尾的状态块（界面整洁 + 防止重复提取）
+        hideRawStateText(mesText, rawText);
+      }
     }
     return state;
   }
