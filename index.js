@@ -1347,6 +1347,29 @@
     }
   }
 
+  // 当总结失败时，用旧状态替换loading卡片
+  function recoverFromLoading() {
+    var curState = loadState();
+    var allMes = document.querySelectorAll('.mes');
+    if (hasContent(curState)) {
+      var total = allMes.length;
+      for (var j = Math.max(0, total - 2); j < total; j++) {
+        var idx = getMessageIndex(allMes[j]);
+        if (idx >= 0) renderCardOnMessage(allMes[j], curState, false);
+      }
+    } else {
+      // 完全没有状态：移除loading卡片
+      for (var j = 0; j < allMes.length; j++) {
+        var header = allMes[j].querySelector('.wst-header.wst-loading');
+        if (header) {
+          var body = allMes[j].querySelector('.wst-body');
+          if (header) header.remove();
+          if (body) body.remove();
+        }
+      }
+    }
+  }
+
   function triggerSummarize() {
     var ctx;
     try { ctx = SillyTavern.getContext(); } catch(e) { return; }
