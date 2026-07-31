@@ -820,8 +820,23 @@
 
   // ==================== 处理消息（按时间顺序维护状态链） ====================
 
-  // 通过对比聊天数组判断消息是否来自用户
+  // 通过 mesid 属性精确定位消息在聊天数组中的位置
   function isUserMessage(msgEl) {
+    var mesid = msgEl.getAttribute('mesid');
+    if (mesid === null || mesid === undefined) {
+      // 回退到文本匹配（兼容极旧版ST）
+      return isUserMessageByText(msgEl);
+    }
+    var idx = parseInt(mesid, 10);
+    if (isNaN(idx)) return false;
+    try {
+      var ctx = SillyTavern.getContext();
+      return !!(ctx.chat && ctx.chat[idx] && ctx.chat[idx].is_user);
+    } catch(e) { return false; }
+  }
+
+  // 文本匹配回退（仅供无mesid属性的旧版ST使用）
+  function isUserMessageByText(msgEl) {
     try {
       var ctx = SillyTavern.getContext();
       if (!ctx.chat || !Array.isArray(ctx.chat)) return false;
