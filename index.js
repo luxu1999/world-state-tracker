@@ -936,6 +936,19 @@
 
   // ==================== 处理消息（按时间顺序维护状态链） ====================
 
+  // 纯文本兜底：从消息末尾提取状态字段（不需要任何HTML标签）
+  function extractStateFromText(rawText) {
+    if (!rawText || rawText.length < 20) return null;
+    // 从文本末尾取最后2000字符（状态通常在末尾）
+    var tail = rawText.length > 2000 ? rawText.substring(rawText.length - 2000) : rawText;
+    // 尝试找"时间："或"时间:"作为起点
+    var timeIdx = tail.search(/时间[：:]/);
+    if (timeIdx === -1) return null;
+    var stateText = tail.substring(timeIdx);
+    console.log('[WST] 纯文本兜底提取 (' + stateText.length + ' chars):', stateText.substring(0, 100));
+    return parseSummary(stateText);
+  }
+
   // 通过 mesid 属性精确定位消息在聊天数组中的位置
   function isUserMessage(msgEl) {
     var mesid = msgEl.getAttribute('mesid');
@@ -1055,27 +1068,48 @@
   }
 
   // 处理最新消息（debounce后触发，render loading → extract → update）
-  // 处理最新AI回复：提取HTML注释状态并更新卡片
+  // 处理最新消息：AI回复提取状态，用户消息继承上一条状态
   function processLatestMessage() {
     var allMessages = document.querySelectorAll('.mes');
     if (allMessages.length === 0) return;
 
     var lastMsg = allMessages[allMessages.length - 1];
     if (lastMsg.classList.contains('system_mes')) return;
-    if (isUserMessage(lastMsg)) return;
 
-    // 提取 HTML 注释格式的状态
+    var isUser = isUserMessage(lastMsg);
+
+    if (isUser) {
+      // 用户消息：用当前状态渲染卡片
+      var s = loadState();
+      if (hasContent(s)) {
+        renderCardOnMessage(lastMsg, s, false);
+        var lidx = getMessageIndex(lastMsg);
+        if (lidx >= 0) { var m = getMsgStatesMap(); m[lidx] = s; saveMsgStatesMap(m); }
+      }
+      return;
+    }
+
+    // AI回复：先尝试HTML注释提取，再尝试纯文本兜底
+    var newState = null;
     var mesText = lastMsg.querySelector('.mes_text');
     if (mesText) {
-      var newState = extractSummaryFromDOM(mesText);
-      if (newState && (newState.time || newState.location || newState.present)) {
-        var oldState = loadState();
-        var merged = mergeState(oldState, newState);
-        merged = filterUserFromState(merged);
-        saveState(merged);
-        lastStateSentHash = '';
-        console.log('[WST] 🤖 状态已更新 - 时间:', merged.time, '| 区域:', merged.location);
+      newState = extractSummaryFromDOM(mesText);
+      // 兜底：从纯文本末尾提取（处理AI不输注释的情况）
+      if (!newState || !newState.time) {
+        var rawText = mesText.textContent || mesText.innerText || '';
+        newState = extractStateFromText(rawText);
       }
+    }
+
+    if (newState && (newState.time || newState.location || newState.present)) {
+      var oldState = loadState();
+      var merged = mergeState(oldState, newState);
+      merged = filterUserFromState(merged);
+      saveState(merged);
+      lastStateSentHash = '';
+      console.log('[WST] 🤖 状态已更新 - 时间:', merged.time, '| 区域:', merged.location);
+    } else {
+      console.log('[WST] ⚠️ 未提取到状态，保留当前状态');
     }
 
     // 用当前状态渲染最后2条消息
@@ -1096,7 +1130,7 @@
     cleanupOldCards(allMessages);
   }
 
-    function cleanupOldCards(allMessages) {
+  function cleanupOldCards(allMessages) {
     var total = allMessages.length;
     var keepStart = Math.max(0, total - 2);
     for (var i = 0; i < keepStart; i++) {
