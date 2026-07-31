@@ -2,10 +2,9 @@
   'use strict';
 
   // ==================== 常量 ====================
-  var STORAGE_PREFIX = 'wst_state_';
+  var DEBOUNCE_MS = 300;
   var MAX_MEMORIES_PER_CHAR = 6;
   var MAX_MEMORY_LENGTH = 70;
-  var DEBOUNCE_MS = 300;
   var timer = null;
   var currentChatId = null;
   var lastStateSentHash = '';   // 避免重复注入
@@ -200,20 +199,65 @@
     return JSON.stringify(state).length + '_' + (state.time || '') + '_' + (state.location || '');
   }
 
-  // ==================== 状态持久化 ====================
+  // ==================== 状态持久化（对标st-memory-enhancement：存在chatMetadata中） ====================
+  // 数据跟随聊天对象，切换聊天时ST自动加载/保存，天然不污染
+  var WST_VERSION = '3.3.3'; // 版本号：更新后首次使用自动清理旧数据
+
+  function getChatMetadata() {
+    try {
+      var ctx = SillyTavern.getContext();
+      if (!ctx.chatMetadata) ctx.chatMetadata = {};
+      return ctx.chatMetadata;
+    } catch(e) { return {}; }
+  }
+
+  function triggerChatSave() {
+    try {
+      var ctx = SillyTavern.getContext();
+      if (typeof ctx.saveChat === 'function') ctx.saveChat();
+    } catch(e) {}
+  }
+
   function loadState() {
     try {
-      var cid = getChatId();
-      var key = STORAGE_PREFIX + cid;
-      var raw = localStorage.getItem(key);
-      if (!raw) {
-        console.log('[WST] loadState: 无缓存 (key=' + key + ')');
+      var meta = getChatMetadata();
+      // 版本检查：更新后首次使用，清理旧数据
+      if (meta.wst_version !== WST_VERSION) {
+        console.log('[WST] 🔄 版本更新 (' + (meta.wst_version || '无') + ' → ' + WST_VERSION + ')，清理旧数据');
+        delete meta.wst_state;
+        delete meta.wst_msg_states;
+        meta.wst_version = WST_VERSION;
+        triggerChatSave();
+        // 同时清理localStorage旧格式
+        try { localStorage.removeItem('wst_state_' + getChatId()); } catch(e) {}
         return createEmptyState();
       }
-      var state = JSON.parse(raw);
-      var hasData = hasContent(state);
-      console.log('[WST] loadState: 读取成功 (key=' + key + ', hasContent=' + hasData + ')');
-      return sanitizeState(state);
+
+      if (meta.wst_state) {
+        var state = typeof meta.wst_state === 'string' ? JSON.parse(meta.wst_state) : meta.wst_state;
+        var hasData = hasContent(state);
+        console.log('[WST] loadState: chatMetadata读取成功 (hasContent=' + hasData + ')');
+        return sanitizeState(state);
+      }
+
+      // 回退：尝试从localStorage旧格式读取
+      try {
+        var cid = getChatId();
+        var raw = localStorage.getItem('wst_state_' + cid);
+        if (raw) {
+          var lsState = JSON.parse(raw);
+          console.log('[WST] loadState: localStorage回退读取成功 (cid=' + cid + ')');
+          // 迁移到chatMetadata
+          meta.wst_state = lsState;
+          meta.wst_version = WST_VERSION;
+          triggerChatSave();
+          localStorage.removeItem('wst_state_' + cid);
+          return sanitizeState(lsState);
+        }
+      } catch(lsErr) {}
+
+      console.log('[WST] loadState: 无缓存');
+      return createEmptyState();
     } catch (e) {
       console.warn('[WST] loadState 失败:', e.message);
       return createEmptyState();
@@ -235,27 +279,30 @@
   }
 
   function saveState(state) {
-    // 保存前过滤用户扮演角色
     var clean = filterUserFromState(state);
     try {
-      localStorage.setItem(STORAGE_PREFIX + getChatId(), JSON.stringify(clean));
+      var meta = getChatMetadata();
+      meta.wst_state = clean;
+      meta.wst_version = WST_VERSION;
+      triggerChatSave();
     } catch (e) { console.warn('[WST] 保存状态失败:', e); }
   }
 
-  // ==================== 逐消息状态快照（防止重载后卡片全显示最新状态） ====================
-  // 存储格式：wst_msg_<chatId> = { "0": stateObj, "1": stateObj, ... }
-  var MSG_STATE_KEY_PREFIX = 'wst_msg_';
+  // ==================== 逐消息状态快照（存在chatMetadata中，跟随聊天对象） ====================
 
   function getMsgStatesMap() {
     try {
-      var raw = localStorage.getItem(MSG_STATE_KEY_PREFIX + getChatId());
-      return raw ? JSON.parse(raw) : {};
+      var meta = getChatMetadata();
+      return meta.wst_msg_states || {};
     } catch(e) { return {}; }
   }
 
   function saveMsgStatesMap(map) {
     try {
-      localStorage.setItem(MSG_STATE_KEY_PREFIX + getChatId(), JSON.stringify(map));
+      var meta = getChatMetadata();
+      meta.wst_msg_states = map;
+      meta.wst_version = WST_VERSION;
+      triggerChatSave();
     } catch(e) { console.warn('[WST] 保存消息状态快照失败:', e); }
   }
 
@@ -1329,7 +1376,11 @@
       lastStateSentHash = '';
 
       // 清除逐消息快照，让全量重算以反映编辑
-      try { localStorage.removeItem(MSG_STATE_KEY_PREFIX + getChatId()); } catch(e) {}
+      try {
+        var meta = getChatMetadata();
+        delete meta.wst_msg_states;
+        triggerChatSave();
+      } catch(e) {}
 
       // 重新扫描所有消息，用编辑后的状态刷新卡片
       scan();
