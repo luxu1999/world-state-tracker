@@ -201,7 +201,7 @@
 
   // ==================== 状态持久化（对标st-memory-enhancement：存在chatMetadata中） ====================
   // 数据跟随聊天对象，切换聊天时ST自动加载/保存，天然不污染
-  var WST_VERSION = '3.9.0'; // 版本号：更新后首次使用自动清理旧数据
+  var WST_VERSION = '3.9.1'; // 版本号：更新后首次使用自动清理旧数据
 
   function getChatMetadata() {
     try {
@@ -1116,22 +1116,38 @@
         else break;
       }
 
-      // 3) finalStart 及其之后所有兄弟节点（含 <br>/<p> 等元素）移入隐藏 span
+      // 3) finalStart 及其后所有内容（含跨 <br>/<p> 分段）移入隐藏 span
+      // v3.9.1：跨父元素处理 — ST markdown 空行分段会产生多个 <p>，
+      // 若只移动同级兄弟会漏掉后续 <p> 中的记忆内容行
       var parent = finalStart.parentNode;
       var span = document.createElement('span');
       span.className = 'wst-raw-summary';
       span.style.display = 'none';
-      // 先把 finalStart 之后的兄弟移入 span（保持顺序）
-      var sib = finalStart.nextSibling;
+      // 3.1) 找到 finalStart 所属的块容器（mesTextEl 的直接子元素，如 <p>）
+      var container = finalStart;
+      while (container.parentNode && container.parentNode !== mesTextEl && container.parentNode.nodeType === 1) {
+        container = container.parentNode;
+      }
+      var containerParent = container.parentNode || parent;
+      // 3.2) 先把容器之后的所有兄弟块移入 span（跨 <p> 的内容）
+      var sib = container.nextSibling;
       while (sib) {
         var nxt = sib.nextSibling;
         span.appendChild(sib);
         sib = nxt;
       }
-      // span 插到 finalStart 原位置，再把 finalStart 移入 span 最前
-      parent.insertBefore(span, finalStart);
+      // 3.3) 再把容器内 finalStart 之后的节点移入 span
+      var inner = finalStart.nextSibling;
+      while (inner) {
+        var nxt2 = inner.nextSibling;
+        span.appendChild(inner);
+        inner = nxt2;
+      }
+      // 3.4) 先把 span 插入容器之后（避免移动 finalStart 后容器关系失效）
+      containerParent.insertBefore(span, container.nextSibling);
+      // 3.5) finalStart 本身移入 span 最前（保留顺序）
       span.insertBefore(finalStart, span.firstChild);
-      console.log('[WST] 🙈 已隐藏正文末尾的状态块 (DOM节点法)');
+      console.log('[WST] 🙈 已隐藏正文末尾的状态块 (DOM节点法, 跨分段)');
     } catch(e) {
       console.warn('[WST] 隐藏状态文本失败:', e.message);
     }
