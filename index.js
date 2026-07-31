@@ -578,6 +578,7 @@
     }
 
     state.memories = enforceMemoryLimits(state.memories);
+    state = fixFieldAssignments(state);
     return state;
   }
 
@@ -660,6 +661,36 @@
     return state;
   }
 
+  // 修复字段串行：检测在场角色中误入的「名字-在做什么」条目，移到不在场角色
+  function fixFieldAssignments(state) {
+    if (!state || !state.present) return state;
+    // 检测在场角色中是否有不在场格式的条目（名字-描述）
+    var presentParts = state.present.split(/[，,、\s]+/).filter(Boolean);
+    var cleanPresent = [];
+    var movedToAbsent = [];
+    for (var i = 0; i < presentParts.length; i++) {
+      var part = presentParts[i];
+      // 跳过纯分隔符和短词
+      if (part === '不' || part.length < 2) continue;
+      // 检测「名字-在做什么」格式（不在场角色特征）
+      if (part.indexOf('-') !== -1 && !/[（(]/.test(part.split('-')[0])) {
+        // 名字后面有-但没有括号BUFF → 可能是不在场条目
+        var namePart = part.split('-')[0];
+        if (namePart.length >= 1) {
+          movedToAbsent.push(part);
+          console.log('[WST] 🔧 从在场移至不在场:', part);
+          continue;
+        }
+      }
+      cleanPresent.push(part);
+    }
+    if (movedToAbsent.length > 0) {
+      state.present = cleanPresent.join('、');
+      state.absent = (state.absent ? state.absent + '、' : '') + movedToAbsent.join('、');
+    }
+    return state;
+  }
+
   function mergeState(oldState, newState) {
     var merged = {
       time: newState.time || oldState.time || '',
@@ -699,6 +730,7 @@
     }
 
     // 安全网：清理在场/不在场矛盾 + 泛称条目
+    merged = fixFieldAssignments(merged);
     merged = sanitizeState(merged);
     return merged;
   }
@@ -1186,8 +1218,8 @@
         '规则：',
         '- 仅追踪女性角色。' + userExclude,
         '- ' + wbConstraint,
-        '- 在场角色 = 最近消息场景中出现的女性角色。',
-        '- 不在场角色 = 之前出现过但当前不在场景的女性角色。格式：角色名-在做什么。禁止泛称。',
+        '- 在场角色 = 最近消息所在场景中出现的女性角色。此字段只写角色名和BUFF，不写角色去做什么。',
+        '- 不在场角色 = 之前出现过但当前不在场景的女性角色。格式：角色名-在做什么。禁止泛称。此字段和在场角色必须分开写，不能写在同一行。',
         '- 好感度系统：' + favorSys,
         '- 重要记忆：每人≤6条，只记改变人生的事件，每条≤70字。',
         '',
