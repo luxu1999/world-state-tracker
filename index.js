@@ -193,10 +193,21 @@
   // ==================== 状态持久化 ====================
   function loadState() {
     try {
-      var raw = localStorage.getItem(STORAGE_PREFIX + getChatId());
-      var state = raw ? JSON.parse(raw) : createEmptyState();
+      var cid = getChatId();
+      var key = STORAGE_PREFIX + cid;
+      var raw = localStorage.getItem(key);
+      if (!raw) {
+        console.log('[WST] loadState: 无缓存 (key=' + key + ')');
+        return createEmptyState();
+      }
+      var state = JSON.parse(raw);
+      var hasData = hasContent(state);
+      console.log('[WST] loadState: 读取成功 (key=' + key + ', hasContent=' + hasData + ')');
       return sanitizeState(state);
-    } catch (e) { return createEmptyState(); }
+    } catch (e) {
+      console.warn('[WST] loadState 失败:', e.message);
+      return createEmptyState();
+    }
   }
 
   function createEmptyState() {
@@ -877,8 +888,27 @@
 
   function scan() {
     var allMessages = document.querySelectorAll('.mes');
+    console.log('[WST] scan() 发现 ' + allMessages.length + ' 条消息');
     for (var i = 0; i < allMessages.length; i++) {
       processMessage(allMessages[i]);
+    }
+    return allMessages.length;
+  }
+
+  // 带重试的扫描：安卓上消息DOM可能延迟加载
+  var _scanRetries = 0;
+  var _scanMaxRetries = 10;
+  function scanWithRetry(delay) {
+    delay = delay || 1000;
+    var count = scan();
+    _scanRetries++;
+    if (count === 0 && _scanRetries < _scanMaxRetries) {
+      console.log('[WST] 未找到消息DOM，' + (delay/1000) + '秒后重试 (第' + _scanRetries + '/' + _scanMaxRetries + '次)');
+      setTimeout(function() { scanWithRetry(delay + 500); }, delay);
+    } else if (count === 0) {
+      console.log('[WST] ⚠️ 重试' + _scanMaxRetries + '次后仍未找到消息DOM，请检查选择器');
+    } else {
+      console.log('[WST] ✅ 初始扫描完成，共处理 ' + count + ' 条消息');
     }
   }
 
@@ -1194,6 +1224,14 @@
       observer.observe(chat, { childList: true, subtree: true });
     }
 
-    setTimeout(scan, 1000);
+    // 初始化扫描（带重试，适配安卓消息延迟加载）
+    _scanRetries = 0;
+    scanWithRetry(1000);
+
+    // 额外保险：3秒后再扫一次（安卓上聊天切换后消息可能二次加载）
+    setTimeout(function() {
+      var count = scan();
+      console.log('[WST] 兜底扫描完成，处理 ' + count + ' 条消息');
+    }, 3000);
   });
 })();
