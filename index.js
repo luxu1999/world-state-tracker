@@ -201,7 +201,7 @@
 
   // ==================== 状态持久化（对标st-memory-enhancement：存在chatMetadata中） ====================
   // 数据跟随聊天对象，切换聊天时ST自动加载/保存，天然不污染
-  var WST_VERSION = '3.8.7'; // 版本号：更新后首次使用自动清理旧数据
+  var WST_VERSION = '3.8.8'; // 版本号：更新后首次使用自动清理旧数据
 
   function getChatMetadata() {
     try {
@@ -987,6 +987,31 @@
     return parseSummary(stateText);
   }
 
+  // 隐藏所有AI消息正文末尾的状态块（历史消息 + 流式渲染覆盖后的新消息；已隐藏的跳过，幂等）
+  function hideStateTextFromAllMessages(allMessages) {
+    if (!allMessages) return;
+    for (var i = 0; i < allMessages.length; i++) {
+      var msg = allMessages[i];
+      if (!msg) continue;
+      try {
+        if (msg.classList.contains('system_mes')) continue;
+        if (isUserMessage(msg)) continue;
+        var mesText = msg.querySelector('.mes_text');
+        if (!mesText) continue;
+        // 已隐藏过则跳过（避免重复包裹嵌套）
+        if (mesText.querySelector('.wst-raw-summary')) continue;
+        var rawText = mesText.textContent || mesText.innerText || '';
+        if (!rawText) continue;
+        var timeIdx = rawText.lastIndexOf('时间：');
+        if (timeIdx === -1) timeIdx = rawText.lastIndexOf('时间:');
+        if (timeIdx === -1) continue;
+        hideRawStateText(mesText, rawText);
+      } catch(e) {
+        // 单条消息失败不影响其它消息
+      }
+    }
+  }
+
   // 隐藏消息正文末尾的纯文本状态块（避免状态文本显示在正文中，界面保持整洁）
   function hideRawStateText(mesTextEl, rawText) {
     try {
@@ -1193,6 +1218,7 @@
     if (allMessages.length === 0) return 0;
 
     // 恢复：AI快照为空但最后一条AI消息含状态标签时，提取作为B（版本清理后自动重建）
+    // 注意：必须在隐藏状态块之前执行，否则状态文本被隐藏后提取不到
     var aiState = getSnapshot('ai');
     if (!hasContent(aiState)) {
       var lastAi = findLastAiMessageEl(allMessages);
@@ -1209,6 +1235,10 @@
         }
       }
     }
+
+    // 隐藏所有AI消息正文末尾的状态块（历史消息 + 流式渲染覆盖后的新消息，幂等）
+    // 放在恢复逻辑之后：恢复已从最后AI消息提取状态，此时隐藏不影响提取
+    hideStateTextFromAllMessages(allMessages);
 
     // AI总结补全：标签恢复后AI快照仍为空（最后AI消息无标签/版本清理后/首次使用）→ 用AI总结补全B
     // _initialSummaryDone：初始扫描/兜底扫描只补全一次，避免重复触发API；切换聊天时重置
