@@ -1318,19 +1318,80 @@
     return null;
   }
 
+  // 需求2.5：首次AI总结读取全部聊天历史，按“最近 X 条”分组标注：
+  //   ① 最近 N 条 AI 消息（N=全部AI消息数）② 最近 20 条用户消息 ③ 最近 50 条消息
+  // 全部消息按原始顺序保留（不只最后 N 条），每条消息标注其所属分组（可多个）
+  function buildFullHistoryItems(chat) {
+    var total = chat.length;
+    var aiCount = 0;
+    var userCount = 0;
+    var i;
+    for (i = 0; i < total; i++) {
+      if (!(chat[i].mes || '').trim()) continue;
+      if (chat[i].is_user) userCount++;
+      else aiCount++;
+    }
+    var last50Count = Math.min(50, total);
+    var last20UserCount = Math.min(20, userCount);
+
+    var byIndex = {};
+    for (i = 0; i < total; i++) byIndex[i] = { labels: [], msg: chat[i] };
+
+    // ③ 最近 50 条消息
+    for (i = Math.max(0, total - 50); i < total; i++) {
+      if ((chat[i].mes || '').trim()) byIndex[i].labels.push('【最近 ' + last50Count + ' 条消息】');
+    }
+    // ② 最近 20 条用户消息
+    var collected = 0;
+    for (i = total - 1; i >= 0 && collected < 20; i--) {
+      if (chat[i].is_user && (chat[i].mes || '').trim()) {
+        byIndex[i].labels.push('【最近 ' + last20UserCount + ' 条用户消息】');
+        collected++;
+      }
+    }
+    // ① 全部 AI 消息
+    for (i = 0; i < total; i++) {
+      if (!chat[i].is_user && (chat[i].mes || '').trim()) {
+        byIndex[i].labels.push('【最近 ' + aiCount + ' 条 AI 消息】');
+      }
+    }
+
+    var out = [];
+    for (i = 0; i < total; i++) out.push(byIndex[i]);
+    return out;
+  }
+
   // 构建总结Prompt：上一状态 + 最近聊天 + 演化规则（b ≠ B，线性逻辑）
   // targetKind: 'ai' → 基于用户快照(b)推演AI状态(B)；'user' → 基于AI快照(B)推演用户状态(b)
+  // 需求2.5：targetKind='ai'（scan()首次/兜底补全）读取全部聊天历史，按“最近 X 条”分组标注；
+  //         targetKind='user'（增量演化）保持 slice(-30) 现有行为
   function buildSummarizePrompt(targetKind) {
     var ctx = SillyTavern.getContext();
     if (!ctx.chat || !Array.isArray(ctx.chat) || ctx.chat.length < 2) return null;
 
-    var msgs = ctx.chat.slice(-30);
+    // 需求2.5：AI总结读取全部聊天历史（不只最后30条）；用户增量总结保持 slice(-30)
+    var items; // [{ labels: [...], msg: 聊天消息 }]
+    if (targetKind === 'ai') {
+      items = buildFullHistoryItems(ctx.chat);
+    } else {
+      var msgs = ctx.chat.slice(-30);
+      items = [];
+      for (var k = 0; k < msgs.length; k++) items.push({ labels: [], msg: msgs[k] });
+    }
+
     var hist = '';
-    for (var i = 0; i < msgs.length; i++) {
-      var m = msgs[i];
+    var lastLabel = '';
+    for (var i = 0; i < items.length; i++) {
+      var m = items[i].msg;
       var r = m.is_user ? (ctx.name1 || '用户') : (m.name || 'AI');
       var t = (m.mes || '').trim();
-      if (t) hist += r + '：' + t + '\n';
+      if (!t) continue;
+      var labelLine = items[i].labels.join('');
+      if (labelLine && labelLine !== lastLabel) {
+        hist += labelLine + '\n';
+        lastLabel = labelLine;
+      }
+      hist += r + '：' + t + '\n';
     }
     if (!hist.trim()) return null;
 
