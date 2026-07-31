@@ -63,6 +63,14 @@
   background: rgba(200, 50, 80, 0.08);
 }
 
+/* ========== 占位提示 ========== */
+.wst-placeholder {
+  color: #9ca3af !important;
+  font-style: italic;
+  text-align: center;
+  padding: 12px 0 !important;
+}
+
 /* ========== 角色名高亮 ========== */
 .wst-char-name {
   font-weight: bold;

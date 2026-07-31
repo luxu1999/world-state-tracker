@@ -201,7 +201,7 @@
 
   // ==================== 状态持久化（对标st-memory-enhancement：存在chatMetadata中） ====================
   // 数据跟随聊天对象，切换聊天时ST自动加载/保存，天然不污染
-  var WST_VERSION = '3.6.3'; // 版本号：更新后首次使用自动清理旧数据
+  var WST_VERSION = '3.6.4'; // 版本号：更新后首次使用自动清理旧数据
 
   function getChatMetadata() {
     try {
@@ -1296,7 +1296,7 @@
   }
 
   jQuery(async function () {
-    console.log('[WST] 🚀 世界状态追踪器 v3.6.3 初始化...');
+    console.log('[WST] 🚀 世界状态追踪器 v3.6.4 初始化...');
     currentChatId = getChatId();
     cleanLegacyWSTTags();
 
