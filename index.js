@@ -223,14 +223,9 @@
       var meta = getChatMetadata();
       // 版本检查：更新后首次使用，清理旧数据
       if (meta.wst_version !== WST_VERSION) {
-        console.log('[WST] 🔄 版本更新 (' + (meta.wst_version || '无') + ' → ' + WST_VERSION + ')，清理旧数据');
-        delete meta.wst_state;
-        delete meta.wst_msg_states;
+        console.log('[WST] 🔄 版本更新 (' + (meta.wst_version || '无') + ' → ' + WST_VERSION + ')');
         meta.wst_version = WST_VERSION;
         triggerChatSave();
-        // 同时清理localStorage旧格式
-        try { localStorage.removeItem('wst_state_' + getChatId()); } catch(e) {}
-        return createEmptyState();
       }
 
       if (meta.wst_state) {
@@ -1024,7 +1019,7 @@
 
       // 优先从快照恢复
       var storedState = msgStatesMap[msgIdx];
-      if (storedState && hasContent(storedState)) {
+      if (storedState) {
         runningState = storedState;
         if (i >= last2Start) {
           renderCardOnMessage(msg, storedState);
@@ -1051,7 +1046,7 @@
       }
 
       // 仅最后2条渲染卡片，旧消息清除卡片
-      if (i >= last2Start && hasContent(runningState)) {
+      if (i >= last2Start) {
         renderCardOnMessage(msg, runningState);
         msgStatesMap[msgIdx] = runningState;
         updatedMsgs = true;
