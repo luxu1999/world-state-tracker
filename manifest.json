@@ -6,7 +6,7 @@
     "js": "index.js",
     "css": "style.css",
     "author": "MEI",
-    "version": "3.2.2",
+    "version": "3.2.3",
     "homePage": "https://github.com/luxu1999/world-state-tracker",
     "description": "自动解析<S-summary>提取世界状态。世界书角色过滤、好感系统优先、DOM拦截确保状态每次跟随发送、重要记忆自动管理(每人≤6条/≤70字)、点击手动编辑。"
 }
