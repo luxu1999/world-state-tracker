@@ -201,7 +201,7 @@
 
   // ==================== 状态持久化（对标st-memory-enhancement：存在chatMetadata中） ====================
   // 数据跟随聊天对象，切换聊天时ST自动加载/保存，天然不污染
-  var WST_VERSION = '3.3.3'; // 版本号：更新后首次使用自动清理旧数据
+  var WST_VERSION = '3.4.0'; // 版本号：更新后首次使用自动清理旧数据
 
   function getChatMetadata() {
     try {
@@ -760,16 +760,12 @@
     if (isFirstTimeState(state) && hasChatHistory()) {
       lines.push('');
       lines.push('【系统指令：首次状态回溯】');
-      lines.push('你必须查看上方聊天历史，推导当前世界状态，在回复末尾用<S-summary>标签输出。');
-      lines.push('格式：时间：xxx / 区域：xxx / 在场角色+BUFF：xxx / 不在场角色：xxx /');
-      lines.push('处女膜状态：xxx / 做爱次数：xxx / 当前好感度：xxx / 身体外貌：xxx /');
-      lines.push('重要记忆点：- 角色名：记忆1|记忆2。所有字段必须填写，禁止省略。');
-      lines.push('注意：仅追踪女性角色；' + (userName ? '排除用户角色「' + userName + '」；' : '') + '在场角色=当前场景中的女性角色。');
+      lines.push('请根据上方聊天历史了解当前世界状态。');
     }
 
     // 输出指令
     lines.push('');
-    lines.push('请在回复末尾用 <S-summary> 标签输出更新后的世界状态。');
+    lines.push('以上是当前世界状态，仅供你作为上下文参考。不需要输出任何状态标签。');
     lines.push('时间 = 上一轮时间 + 本轮事件大致经历的时长。');
     lines.push('重要记忆点每人最多6条，只记录改变人生的重要事件，每条不超过70字。');
     lines.push('</WST_世界状态>');
@@ -1079,6 +1075,9 @@
 
       // Step 3: 清除旧卡片
       cleanupOldCards(allMessages);
+
+      // 触发独立LLM状态提取
+      triggerSummarize();
     }
   }
 
@@ -1470,9 +1469,7 @@
         clearTimeout(timer);
         lastStateSentHash = '';
         timer = setTimeout(function () {
-          // 只处理最新消息（提取S-summary），不重扫全部
           processLatestMessage();
-          triggerSummarize();
         }, DEBOUNCE_MS);
       });
 
