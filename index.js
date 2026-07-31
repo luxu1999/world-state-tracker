@@ -830,17 +830,22 @@
   }
 
   // ==================== 卡片渲染 ====================
+  // 空状态占位行：字段名 + 空值，保证9个字段始终可见可点击
+  function buildEmptyFieldLineHTML(f) {
+    return '<div class="wst-body__line wst-placeholder" data-wst-key="' + f.key + '" title="' + f.label.replace(/：$/, '') + '">' +
+      f.label +
+    '</div>';
+  }
+
   function buildCardHTML(state, kind, loading) {
     var isEmpty = !hasContent(state);
     var valueHTML = [];
-    if (isEmpty) {
-      valueHTML.push('<div class="wst-body__line wst-placeholder" data-wst-key="time" title="点击编辑初始状态">点击任意行编辑初始状态</div>');
-    }
     for (var i = 0; i < FIELDS.length; i++) {
       var f = FIELDS[i];
       var key = f.key;
       var value = '';
-      if (isEmpty) { valueHTML.push(''); continue; }
+      // 空状态也渲染全部字段（字段名+空值），保证9个字段始终可见可点击
+      if (isEmpty) { valueHTML.push(buildEmptyFieldLineHTML(f)); continue; }
 
       if (key === 'memories') {
         if (state.memories && Object.keys(state.memories).length > 0) {
@@ -875,9 +880,13 @@
 
   function populateCard(cardBody, state) {
     if (!cardBody || !state) return;
-    // 空状态：整卡替换为占位提示（版本清理/首次使用后刷新）
+    // 空状态：整卡替换为全部字段占位行（版本清理/首次使用后刷新），9个字段始终可见可点击
     if (!hasContent(state)) {
-      cardBody.innerHTML = '<div class="wst-body__line wst-placeholder" data-wst-key="time" title="点击编辑初始状态">点击任意行编辑初始状态</div>';
+      var emptyHTML = [];
+      for (var ei = 0; ei < FIELDS.length; ei++) {
+        emptyHTML.push(buildEmptyFieldLineHTML(FIELDS[ei]));
+      }
+      cardBody.innerHTML = emptyHTML.join('');
       return;
     }
     var lines = cardBody.querySelectorAll('.wst-body__line');
