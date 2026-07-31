@@ -201,7 +201,7 @@
 
   // ==================== 状态持久化（对标st-memory-enhancement：存在chatMetadata中） ====================
   // 数据跟随聊天对象，切换聊天时ST自动加载/保存，天然不污染
-  var WST_VERSION = '3.6.2'; // 版本号：更新后首次使用自动清理旧数据
+  var WST_VERSION = '3.6.3'; // 版本号：更新后首次使用自动清理旧数据
 
   function getChatMetadata() {
     try {
@@ -1157,6 +1157,61 @@
     }
   }
 
+  // ==================== Prompt 注入 ====================
+
+  // 将状态输出指令追加到用户消息末尾（AI无法忽略对话中的内容）
+  function injectStateToChatArray(eventData) {
+    if (eventData.dryRun) return;
+    var state = loadState();
+    if (!shouldInject(state)) return;
+    var firstTime = isFirstTimeState(state) && hasChatHistory();
+    if (firstTime) console.log('[WST] 🆕 用户消息追加：首次回溯指令');
+
+    // 构建状态输出指令（精简版，追加到用户消息末尾）
+    var wbData = getWorldBookData();
+    var outLines = [
+      '\n\n[在回复末尾用HTML注释格式输出更新后的世界状态，每个字段独占一行：',
+      '<!-- WST',
+      '时间：',
+      '区域：',
+      '在场角色+BUFF：',
+      '不在场角色：',
+      '处女膜状态：',
+      '做爱次数：',
+      '当前好感度：',
+      '身体外貌：',
+      '重要记忆点：',
+      '- 角色名：记忆1|记忆2',
+      '-->',
+      '注意：只追踪女性角色。时间=上一轮时间+本轮事件时长。重要记忆每人≤6条≤70字。]'
+    ].join('\n');
+
+    // 注入当前状态 + 输出指令作为 system prompt
+    var stateText = buildStatePrompt(state);
+    try {
+      eventData.chat.push({ role: 'system', content: stateText + '\n\n' + outLines });
+      console.log('[WST] ✅ 状态+输出指令已注入 (' + stateText.length + ' chars)');
+    } catch (e) {
+      console.warn('[WST] 注入失败:', e.message);
+    }
+  }
+
+  // 兼容入口：ExtensionPrompt方式（旧版ST回退）
+  function injectStateToPrompt() {
+    var state = loadState();
+    if (!shouldInject(state)) return;
+    var stateText = buildStatePrompt(state);
+    try {
+      var ctx = SillyTavern.getContext();
+      if (typeof ctx.setExtensionPrompt === 'function') {
+        ctx.setExtensionPrompt('wst', stateText, 0);
+        console.log('[WST] ✅ ExtensionPrompt 注入 (' + stateText.length + ' chars)');
+      }
+    } catch (e) {
+      console.warn('[WST] ExtensionPrompt 失败:', e.message);
+    }
+  }
+
   // ==================== 点击交互 ====================
   document.addEventListener('click', function (e) {
     // 折叠/展开
@@ -1241,7 +1296,7 @@
   }
 
   jQuery(async function () {
-    console.log('[WST] 🚀 世界状态追踪器 v3.6.2 初始化...');
+    console.log('[WST] 🚀 世界状态追踪器 v3.6.3 初始化...');
     currentChatId = getChatId();
     cleanLegacyWSTTags();
 
@@ -1262,6 +1317,21 @@
       var et = ctx.event_types;
 
       // 即时提取：AI消息渲染后尝试提取HTML注释
+      // Prompt注入：用CHAT_COMPLETION_PROMPT_READY将状态指令注入到chat数组
+      if (et.CHAT_COMPLETION_PROMPT_READY) {
+        es.on(et.CHAT_COMPLETION_PROMPT_READY, function (eventData) {
+          injectStateToChatArray(eventData);
+        });
+        console.log('[WST] CHAT_COMPLETION_PROMPT_READY 注入已注册');
+      } else {
+        // 回退到MESSAGE_SENT
+        es.on(et.MESSAGE_SENT, function () {
+          lastStateSentHash = '';
+          injectStateToPrompt();
+        });
+        console.log('[WST] MESSAGE_SENT 注入已注册（回退）');
+      }
+
       es.on(et.CHARACTER_MESSAGE_RENDERED, function () {
         clearTimeout(timer);
         lastStateSentHash = '';
