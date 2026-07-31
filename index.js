@@ -1011,10 +1011,8 @@
     return rendered;
   }
 
-  // 处理最新消息（用户消息触发总结演化，AI消息提取S-summary）
-  var _processingLatest = false;
+  // 处理最新消息（debounce后触发，此时用户+AI消息都已渲染完毕）
   function processLatestMessage() {
-    if (_processingLatest) return;
     var allMessages = document.querySelectorAll('.mes');
     if (allMessages.length === 0) return;
 
@@ -1024,29 +1022,17 @@
     var isUser = isUserMessage(lastMsg);
 
     if (isUser) {
-      // 用户消息：触发静默总结获取演化后状态
-      _processingLatest = true;
-      console.log('[WST] 用户消息，触发总结演化状态...');
-      summarizeChatHistory().then(function() {
-        _processingLatest = false;
-        var evolvedState = loadState();
-        if (hasContent(evolvedState)) {
-          renderCardOnMessage(lastMsg, evolvedState);
-          var lastIdx = getMessageIndex(lastMsg);
-          if (lastIdx >= 0) {
-            var map = getMsgStatesMap();
-            map[lastIdx] = evolvedState;
-            saveMsgStatesMap(map);
-          }
-          cleanupOldCards(allMessages);
-        }
-      }).catch(function() {
-        _processingLatest = false;
-        var s = loadState();
-        if (hasContent(s)) renderCardOnMessage(lastMsg, s);
-      });
+      // 罕见情况：最新消息是用户消息（AI还没回复就触发了）
+      // 直接用当前状态渲染卡片
+      var s = loadState();
+      if (hasContent(s)) {
+        renderCardOnMessage(lastMsg, s);
+        var lidx = getMessageIndex(lastMsg);
+        if (lidx >= 0) { var m = getMsgStatesMap(); m[lidx] = s; saveMsgStatesMap(m); }
+      }
     } else {
-      // AI消息：提取S-summary
+      // 正常情况：最新消息是AI回复
+      // Step 1: 提取S-summary，更新全局状态
       var mesText = lastMsg.querySelector('.mes_text');
       if (mesText) {
         var newState = extractSummaryFromDOM(mesText);
@@ -1055,21 +1041,44 @@
           var merged = mergeState(oldState, newState);
           merged = filterUserFromState(merged);
           saveState(merged);
-          renderCardOnMessage(lastMsg, merged);
-          var lastIdx = getMessageIndex(lastMsg);
-          if (lastIdx >= 0) {
-            var map = getMsgStatesMap();
-            map[lastIdx] = merged;
-            saveMsgStatesMap(map);
-          }
-          console.log('[WST] AI S-summary提取成功');
           lastStateSentHash = '';
-        } else {
-          var s = loadState();
-          if (hasContent(s)) renderCardOnMessage(lastMsg, s);
+          console.log('[WST] 🤖 AI S-summary提取成功，状态已更新');
         }
-        cleanupOldCards(allMessages);
       }
+
+      // Step 2: 用最新状态渲染最后2条消息（AI消息 + 用户消息）
+      var currentState = loadState();
+      if (hasContent(currentState)) {
+        var total = allMessages.length;
+        var map = getMsgStatesMap();
+        var updated = false;
+
+        // 渲染AI消息
+        var aiIdx = getMessageIndex(lastMsg);
+        if (aiIdx >= 0) {
+          renderCardOnMessage(lastMsg, currentState);
+          map[aiIdx] = currentState;
+          updated = true;
+        }
+
+        // 渲染前一条用户消息
+        if (total >= 2) {
+          var userMsg = allMessages[total - 2];
+          if (isUserMessage(userMsg)) {
+            var userIdx = getMessageIndex(userMsg);
+            if (userIdx >= 0) {
+              renderCardOnMessage(userMsg, currentState);
+              map[userIdx] = currentState;
+              updated = true;
+            }
+          }
+        }
+
+        if (updated) saveMsgStatesMap(map);
+      }
+
+      // Step 3: 清除旧卡片
+      cleanupOldCards(allMessages);
     }
   }
 
