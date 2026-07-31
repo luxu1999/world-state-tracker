@@ -792,14 +792,25 @@
     if (isFirstTimeState(state) && hasChatHistory()) {
       lines.push('');
       lines.push('【系统指令：首次状态回溯】');
-      lines.push('请根据上方聊天历史了解当前世界状态。');
+      lines.push('请根据上方聊天历史，用HTML注释格式输出当前世界的完整状态。格式：<!-- WST -->时间：xxx / 区域：xxx / ... -->');
     }
 
     // 输出指令
     lines.push('');
-    lines.push('以上是当前世界状态，仅供你作为上下文参考。不需要输出任何状态标签。');
-    lines.push('时间 = 上一轮时间 + 本轮事件大致经历的时长。');
-    lines.push('重要记忆点每人最多6条，只记录改变人生的重要事件，每条不超过70字。');
+    lines.push('在回复末尾用以下HTML注释格式输出更新后的世界状态（每个字段必须独占一行）：');
+    lines.push('<!-- WST');
+    lines.push('时间：xxx');
+    lines.push('区域：xxx');
+    lines.push('在场角色+BUFF：xxx');
+    lines.push('不在场角色：xxx');
+    lines.push('处女膜状态：xxx');
+    lines.push('做爱次数：xxx');
+    lines.push('当前好感度：xxx');
+    lines.push('身体外貌：xxx');
+    lines.push('重要记忆点：');
+    lines.push('- 角色名：记忆1|记忆2');
+    lines.push('-->');
+    lines.push('时间 = 上一轮时间 + 本轮事件大致经历的时长。重要记忆点每人最多6条，每条不超过70字。');
     lines.push('</WST_世界状态>');
 
     return lines.join('\n');
@@ -884,6 +895,10 @@
 
     var html = mesTextEl.innerHTML || '';
     var patterns = [
+      // HTML注释格式（DOMPurify不拦截，优先匹配）
+      /<!--\s*WST\s*-->?\s*\n?([\s\S]*?)<!--\s*\/?WST\s*-->/i,
+      /<!--\s*WST\s*\n?([\s\S]*?)-->/i,
+      // 旧版S-summary标签
       /<S-summary>([\s\S]*?)<\/S-summary>/i,
       /&lt;S-summary&gt;([\s\S]*?)&lt;\/S-summary&gt;/i,
       /&lt;S-summary>([\s\S]*?)<\/S-summary>/i,
@@ -1039,7 +1054,7 @@
     return rendered;
   }
 
-  // 处理最新消息（debounce后触发，此时用户+AI消息都已渲染完毕）
+  // 处理最新消息（debounce后触发，render loading → extract → update）
   function processLatestMessage() {
     var allMessages = document.querySelectorAll('.mes');
     if (allMessages.length === 0) return;
@@ -1050,67 +1065,73 @@
     var isUser = isUserMessage(lastMsg);
 
     if (isUser) {
-      // 罕见情况：最新消息是用户消息（AI还没回复就触发了）
-      // 直接用当前状态渲染卡片
       var s = loadState();
       if (hasContent(s)) {
-        renderCardOnMessage(lastMsg, s);
+        renderCardOnMessage(lastMsg, s, false);
         var lidx = getMessageIndex(lastMsg);
         if (lidx >= 0) { var m = getMsgStatesMap(); m[lidx] = s; saveMsgStatesMap(m); }
       }
     } else {
-      // 正常情况：最新消息是AI回复
-      // Step 1: 提取S-summary，更新全局状态
+      // AI回复：先显示loading卡片
+      var aiIdx = getMessageIndex(lastMsg);
+      renderLoadingCard(lastMsg);
+
+      if (allMessages.length >= 2) {
+        var userMsg = allMessages[allMessages.length - 2];
+        if (isUserMessage(userMsg)) {
+          renderLoadingCard(userMsg);
+        }
+      }
+      cleanupOldCards(allMessages);
+
+      // 提取HTML注释格式的状态（DOMPurify不拦截）
       var mesText = lastMsg.querySelector('.mes_text');
       if (mesText) {
         var newState = extractSummaryFromDOM(mesText);
-        if (newState) {
+        if (newState && (newState.time || newState.location || newState.present)) {
           var oldState = loadState();
           var merged = mergeState(oldState, newState);
           merged = filterUserFromState(merged);
           saveState(merged);
           lastStateSentHash = '';
-          console.log('[WST] 🤖 AI S-summary提取成功，状态已更新');
-        }
-      }
+          console.log('[WST] 🤖 状态已提取 - 时间:', merged.time, '| 区域:', merged.location);
 
-      // Step 2: 用最新状态渲染最后2条消息（AI消息 + 用户消息）
-      var currentState = loadState();
-      if (hasContent(currentState)) {
-        var total = allMessages.length;
-        var map = getMsgStatesMap();
-        var updated = false;
-
-        // 渲染AI消息
-        var aiIdx = getMessageIndex(lastMsg);
-        if (aiIdx >= 0) {
-          renderCardOnMessage(lastMsg, currentState);
-          map[aiIdx] = currentState;
-          updated = true;
-        }
-
-        // 渲染前一条用户消息
-        if (total >= 2) {
-          var userMsg = allMessages[total - 2];
-          if (isUserMessage(userMsg)) {
-            var userIdx = getMessageIndex(userMsg);
-            if (userIdx >= 0) {
-              renderCardOnMessage(userMsg, currentState);
-              map[userIdx] = currentState;
-              updated = true;
+          var total = allMessages.length;
+          var map = getMsgStatesMap();
+          for (var j = Math.max(0, total - 2); j < total; j++) {
+            var idx = getMessageIndex(allMessages[j]);
+            if (idx >= 0) {
+              renderCardOnMessage(allMessages[j], merged, false);
+              map[idx] = merged;
             }
           }
+          saveMsgStatesMap(map);
+        } else {
+          console.log('[WST] ⚠️ 未提取到状态，使用旧状态');
+          var curState = loadState();
+          if (hasContent(curState) && aiIdx >= 0) {
+            renderCardOnMessage(lastMsg, curState, false);
+          } else {
+            removeCardFromMessage(lastMsg);
+          }
+          triggerSummarize();
         }
-
-        if (updated) saveMsgStatesMap(map);
       }
-
-      // Step 3: 清除旧卡片
-      cleanupOldCards(allMessages);
-
-      // 触发独立LLM状态提取
-      triggerSummarize();
     }
+  }
+
+  // 渲染loading卡片
+  function renderLoadingCard(msgEl) {
+    if (!msgEl) return;
+    removeCardFromMessage(msgEl);
+    var temp = document.createElement('div');
+    temp.innerHTML =
+      '<div class="wst-header wst-loading">' +
+        '<span class="wst-triangle"></span>' +
+        '📋 状态追踪 ⏳ 正在整理...' +
+      '</div>' +
+      '<div class="wst-body" style="display:none;"></div>';
+    while (temp.firstChild) msgEl.appendChild(temp.firstChild);
   }
 
   function cleanupOldCards(allMessages) {
@@ -1400,6 +1421,8 @@
     // 折叠/展开
     var header = e.target.closest('.wst-header');
     if (header) {
+      // loading中的卡片不可交互
+      if (header.classList.contains('wst-loading')) return;
       var body = header.nextElementSibling;
       if (body && body.classList.contains('wst-body')) {
         header.classList.toggle('wst-collapsed');

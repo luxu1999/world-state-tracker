@@ -87,3 +87,26 @@
 .wst-raw-summary {
   display: none !important;
 }
+
+/* ========== Loading 状态 ========== */
+.wst-header.wst-loading {
+  background: #f3f4f6 !important;
+  border-color: #d1d5db !important;
+  color: #9ca3af !important;
+  cursor: default !important;
+  pointer-events: none !important;
+}
+
+.wst-header.wst-loading:hover {
+  background: #f3f4f6 !important;
+}
+
+.wst-header.wst-loading .wst-triangle {
+  border-top-color: #9ca3af !important;
+  animation: wst-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes wst-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
