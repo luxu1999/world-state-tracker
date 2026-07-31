@@ -201,7 +201,7 @@
 
   // ==================== 状态持久化（对标st-memory-enhancement：存在chatMetadata中） ====================
   // 数据跟随聊天对象，切换聊天时ST自动加载/保存，天然不污染
-  var WST_VERSION = '3.6.0'; // 版本号：更新后首次使用自动清理旧数据
+  var WST_VERSION = '3.6.1'; // 版本号：更新后首次使用自动清理旧数据
 
   function getChatMetadata() {
     try {
@@ -1112,20 +1112,18 @@
       console.log('[WST] ⚠️ 未提取到状态，保留当前状态');
     }
 
-    // 用当前状态渲染最后2条消息
+    // 用当前状态渲染最后2条消息（即使状态为空，首次使用时也显示占位）
     var currentState = loadState();
-    if (hasContent(currentState)) {
-      var total = allMessages.length;
-      var map = getMsgStatesMap();
-      for (var j = Math.max(0, total - 2); j < total; j++) {
-        var idx = getMessageIndex(allMessages[j]);
-        if (idx >= 0) {
-          renderCardOnMessage(allMessages[j], currentState, false);
-          map[idx] = currentState;
-        }
+    var total = allMessages.length;
+    var map = getMsgStatesMap();
+    for (var j = Math.max(0, total - 2); j < total; j++) {
+      var idx = getMessageIndex(allMessages[j]);
+      if (idx >= 0) {
+        renderCardOnMessage(allMessages[j], currentState, false);
+        map[idx] = currentState;
       }
-      saveMsgStatesMap(map);
     }
+    saveMsgStatesMap(map);
 
     cleanupOldCards(allMessages);
   }
@@ -1248,7 +1246,7 @@
   }
 
   jQuery(async function () {
-    console.log('[WST] 🚀 世界状态追踪器 v3.6.0 初始化...');
+    console.log('[WST] 🚀 世界状态追踪器 v3.6.1 初始化...');
     currentChatId = getChatId();
     cleanLegacyWSTTags();
 
