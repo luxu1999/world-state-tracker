@@ -1120,6 +1120,11 @@
           }
         }
       }
+
+      // 兜底：5秒后触发异步提取（兼容GENERATION_ENDED不触发的Android ST）
+      setTimeout(function() {
+        triggerSummarize();
+      }, 5000);
     }
   }
 
