@@ -930,13 +930,13 @@
         return;
       }
 
-      // 构建聊天历史文本（最后15条，控制token）
-      var recentMessages = ctx.chat.slice(-15);
+      // 构建聊天历史文本（最后30条，覆盖更多历史）
+      var recentMessages = ctx.chat.slice(-30);
       var historyText = '';
       for (var i = 0; i < recentMessages.length; i++) {
         var m = recentMessages[i];
         var role = m.is_user ? (ctx.name1 || '用户') : (m.name || 'AI');
-        var text = (m.mes || '').replace(/<WST_世界状态>[\s\S]*?<\/WST_世界状态>/g, '').trim();
+        var text = (m.mes || '').replace(/<WST_世界状态>[\s\S]*?<\/WST_世界状态>/g, '').replace(/<S-summary>[\s\S]*?<\/S-summary>/gi, '').trim();
         if (text) historyText += role + '：' + text + '\n';
       }
 
@@ -944,64 +944,51 @@
 
       var wbData = getWorldBookData();
       var favorSys = wbData.favorabilitySystem || getDefaultFavorabilitySystem();
-      var wbNote = wbData.allKeys.length > 0 ? '仅限世界书角色：' + wbData.allKeys.join('、') + '。' : '';
-
-      var systemMsg = '你是世界状态追踪器。根据聊天记录提取当前世界状态。只输出状态，不要解释。';
-
-      // 获取用户名用于排除说明
       var userName = getUserPersonaName();
-      var userExcludeNote = userName ? '用户扮演的角色「' + userName + '」不追踪，所有字段中都不出现。' : '';
 
-      var userMsg = '聊天记录：\n' + historyText + '\n\n' +
-        '请按以下格式输出当前世界状态：\n' +
-        '时间：（格式：xxxx年xx月xx日xx时xx分。如无明确时间，根据剧情合理推断，不要留空）\n' +
-        '区域：\n' +
-        '在场角色+BUFF：\n' +
-        '不在场角色：\n' +
-        '处女膜状态：\n' +
-        '做爱次数：\n' +
-        '当前好感度：\n' +
-        '身体外貌：\n' +
-        '重要记忆点：\n' +
-        '- 角色名：记忆1|记忆2\n\n' +
-        '★★★ 核心规则（必须严格遵守）★★★\n\n' +
-        '【规则0：仅追踪女性角色】\n' +
-        '   所有字段（在场角色、不在场角色、处女膜状态、做爱次数、身体外貌、当前好感度、重要记忆点）\n' +
-        '   仅记录女性角色信息。男性角色不出现。\n\n' +
-        (userName ? '【规则0.5：排除用户角色】\n   「' + userName + '」是用户扮演的角色，无论男女，任何字段中都不出现此角色。\n\n' : '') +
-        '【规则1：在场/不在场的核心判断标准】\n' +
-        '  在场角色 = 查看最近几条消息的对话场景，在该场景中出现的所有女性角色都是在场角色。\n' +
-        '  判断方法：如果角色在说话、被他人对话、在场景中有动作描写，她就在场。\n' +
-        '  关键：主角当前所处的场景就是"在场"场景。场景中所有女性均是在场角色。\n' +
-        '  示例：\n' +
-        '    消息中琴和主角在骑士团办公室对话，芭芭拉走进来打招呼 → 在场角色=琴、芭芭拉\n' +
-        '    消息中主角和琴在野外战斗，芭芭拉在远处施法 → 在场角色=琴、芭芭拉\n' +
-        '    消息中主角独自在酒馆，回想起昨天和琴的对话 → 在场角色=无（琴不在场景中）\n\n' +
-        '【规则2：不在场角色的判断标准】\n' +
-        '  不在场角色 = 之前在正文中出现过的女性角色，但当前不在主角所在场景。\n' +
-        '  当前场景中出现的角色绝不能被误判为不在场！\n' +
-        '  从未在正文中出现过的角色一律不列入不在场。\n' +
-        '  格式：角色名-在做什么（每个角色≤10字），如"琴-在骑士团办公"。\n' +
-        '  【严禁】不允许出现泛称条目！禁止写"七神及各国角色""其他角色""众人"等非具体角色名的条目。\n' +
-        '  不在场角色必须是世界书中的具体女性角色名，每个一行。\n\n' +
-        '【规则3：在场与不在场互斥】\n' +
-        '  同一角色绝对不能同时出现在两边。如果在场角色列了某角色，不在场绝对不能列她。\n\n' +
-        (wbData.allKeys.length > 0 ? '【规则4：世界书角色约束】\n   在场/不在场中只能出现世界书角色：' + wbData.allKeys.join('、') + '。\n   非世界书角色不列入。\n\n' : '') +
-        '【规则5：好感度系统】\n' +
-        '  好感度系统=' + favorSys + '。\n\n' +
-        '【规则6：重要记忆点】\n' +
-        '  每人≤6条，只记改变人生的事件（死亡、初吻、觉醒、背叛、重伤等），每条≤70字。\n' +
-        '  日常琐事（吃了什么、走了几步路等）不记录。\n\n' +
-        '【输出前自检】在你输出<S-summary>之前，请再次确认：\n' +
-        '  □ 是否所有在场角色都正确识别了？（检查最近消息中所有出现的女性角色）\n' +
-        '  □ 当前场景中的角色是否被错误分到了"不在场角色"？\n' +
-        '  □ 不在场角色是否为"之前出现过但现在不在"的具体角色名？是否有泛称（如"七神""众人"）？\n' +
-        '  □ 是否排除了用户角色和所有男性角色？';
+      // 精简版prompt — 用===分隔线明确区分指令和数据，防止AI当作故事续写
+      var userExclude = userName ? '排除用户角色「' + userName + '」。' : '';
+      var wbConstraint = wbData.allKeys.length > 0 ? '仅限世界书角色：' + wbData.allKeys.join('、') + '。' : '';
+
+      var prompt = [
+        '========== 系统指令：世界状态提取（不要续写故事！只提取！）==========',
+        '',
+        '你是一个数据提取工具。阅读下方的聊天记录，提取当前世界状态。',
+        '直接输出<S-summary>格式，不要添加任何故事内容、不要续写、不要解释。',
+        '',
+        '规则：',
+        '- 仅追踪女性角色。' + userExclude,
+        '- ' + wbConstraint,
+        '- 在场角色 = 最近消息场景中出现的女性角色。',
+        '- 不在场角色 = 之前出现过但当前不在场景的女性角色。格式：角色名-在做什么。禁止泛称。',
+        '- 好感度系统：' + favorSys,
+        '- 重要记忆：每人≤6条，只记改变人生的事件，每条≤70字。',
+        '',
+        '输出格式（严格按此，不要省略任何字段）：',
+        '<S-summary>',
+        '时间：',
+        '区域：',
+        '在场角色+BUFF：',
+        '不在场角色：',
+        '处女膜状态：',
+        '做爱次数：',
+        '当前好感度：',
+        '身体外貌：',
+        '重要记忆点：',
+        '- 角色名：记忆1|记忆2',
+        '</S-summary>',
+        '',
+        '========== 聊天记录 ==========',
+        historyText,
+        '========== 结束 ==========',
+        '',
+        '现在输出<S-summary>：'
+      ].join('\n');
 
       console.log('[WST] 🤖 开始静默总结 (历史长度:' + historyText.length + ' chars)...');
 
       var result = await ctx.generateQuietPrompt({
-        quietPrompt: systemMsg + '\n\n' + userMsg,
+        quietPrompt: prompt,
         skipWIAN: true
       });
 
@@ -1011,7 +998,6 @@
         resultText = result;
       } else if (result && typeof result === 'object') {
         resultText = result.mes || result.text || result.content || '';
-        // 有些版本返回 chat 数组
         if (!resultText && Array.isArray(result) && result.length > 0) {
           resultText = result[result.length - 1].mes || result[result.length - 1].content || '';
         }
@@ -1019,31 +1005,37 @@
         if (!resultText) resultText = JSON.stringify(result);
       }
 
-      console.log('[WST] 总结原始返回 (' + resultText.length + ' chars):', resultText.substring(0, 200));
+      console.log('[WST] 总结原始返回 (' + resultText.length + ' chars):', resultText.substring(0, 300));
+
+      // 检测是否返回了故事续写（不含任何字段标签）
+      var looksLikeStory = resultText.indexOf('时间') === -1 && resultText.indexOf('区域') === -1 && resultText.indexOf('在场') === -1;
+      if (looksLikeStory && resultText.length > 5) {
+        console.log('[WST] ⚠️ AI返回了故事续写而非总结，跳过（可能是模型不支持静默总结模式）');
+        summarizeLock = false;
+        return;
+      }
 
       if (resultText && resultText.length > 10) {
         var newState = parseSummary(resultText);
         if (newState && (newState.time || newState.location || newState.present || newState.absent)) {
           var oldState = loadState();
           var merged = mergeState(oldState, newState);
-          // 过滤用户扮演角色
           merged = filterUserFromState(merged);
           saveState(merged);
           console.log('[WST] ✅ 状态已更新 - 时间:', merged.time, '| 区域:', merged.location, '| 在场:', merged.present, '| 不在场:', merged.absent);
 
-          // 只更新最后一条AI消息的卡片（不碰历史消息）
+          // 渲染所有AI消息的卡片
           var allMes = document.querySelectorAll('.mes');
-          for (var j = allMes.length - 1; j >= 0; j--) {
-            var card = allMes[j].querySelector('.wst-body');
-            if (card) {
+          for (var j = 0; j < allMes.length; j++) {
+            var existingCard = allMes[j].querySelector('.wst-body');
+            if (existingCard) {
               MESSAGE_STATES.set(allMes[j], merged);
-              populateCard(card, merged);
-              break;
+              populateCard(existingCard, merged);
             }
           }
           lastStateSentHash = '';
         } else {
-          console.log('[WST] ⚠️ 解析后状态仍为空，可能需要调整Prompt。解析结果:', JSON.stringify(newState).substring(0, 200));
+          console.log('[WST] ⚠️ 解析后状态仍为空。解析结果:', JSON.stringify(newState).substring(0, 200));
         }
       } else {
         console.log('[WST] ⚠️ 总结返回内容过短或为空');
@@ -1206,7 +1198,15 @@
         clearUserNameCache();
         lastStateSentHash = '';
         clearTimeout(timer);
-        timer = setTimeout(scan, 500);
+        timer = setTimeout(function() {
+          scan();
+          // 切换到历史聊天时，如果状态为空且有聊天记录，立即注入首次回溯指令
+          var state = loadState();
+          if (shouldInject(state) && !hasContent(state)) {
+            console.log('[WST] 🆕 检测到历史聊天无状态，立即注入回溯指令');
+            injectStateToPrompt();
+          }
+        }, 500);
         console.log('[WST] 聊天已切换');
       });
 
