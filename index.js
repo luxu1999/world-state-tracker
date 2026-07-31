@@ -1255,8 +1255,10 @@
         console.log('[WST] 🤖 generateRaw 提取状态... (60s超时计时开始)');
         var rawResult = await Promise.race([
           ctx.generateRaw({
-            systemPrompt: systemPrompt,
-            prompt: userPrompt + '\n\n请严格输出JSON格式，不要任何额外文字：{"time":"","location":"","present":"","absent":"","hymen":"","sexCount":"","affection":"","appearance":"","memories":""}'
+            prompt: [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: userPrompt }
+            ]
           }),
           new Promise(function(_, reject) { setTimeout(function() { console.log('[WST] ⏰ generateRaw 超时!'); reject(new Error('generateRaw 超时(60s)')); }, 60000); })
         ]);
@@ -1276,7 +1278,7 @@
           console.log('[WST] 回退到 generateQuietPrompt... (30s超时)');
           var qResult = await Promise.race([
             ctx.generateQuietPrompt({
-              quietPrompt: userPrompt + '\n\n只用JSON输出：{"time":"...","location":"...",...}',
+              quietPrompt: systemPrompt + '\n\n' + userPrompt,
               skipWIAN: true
             }),
             new Promise(function(_, reject) { setTimeout(function() { console.log('[WST] ⏰ generateQuietPrompt 超时!'); reject(new Error('generateQuietPrompt 超时(30s)')); }, 30000); })
