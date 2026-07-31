@@ -7,7 +7,7 @@
 - 🤖 **自动解析 `<S-summary>`** — AI 回复末尾的状态标签，自动提取并存储
 - 📋 **可折叠状态卡片** — 仅最新 2 条消息（AI+用户）显示卡片，旧卡片自动清除
 - ✏️ **手动编辑** — 点击任意字段直接修改，立即生效
-- 🔄 **静默总结** — 用户发消息后触发总结获取演化状态；AI 回复后走 S-summary 提取
+- 🔄 **静默总结** — 用户发消息后触发总结获取演化状态；AI 回复后走 S-summary 提取；scan() 在最后AI消息无标签/版本清理后自动用 AI 总结补全 B
 - 💾 **chatMetadata 持久化** — 数据跟随聊天对象（对标 st-memory-enhancement），切换聊天不污染
 - 🔗 **状态继承链（B→b）** — AI 消息卡片显示 B（标签提取）；用户消息卡片显示 b = B 经用户事件线性演化（b ≠ B）
 - 📖 **世界书集成** — 自动读取世界书角色列表和好感度系统
@@ -288,6 +288,12 @@ ctx.chatMetadata.wst_version        ← 版本号（变更时自动清理全部�
 ---
 
 ## 📝 版本历史
+
+### v3.8.2 (2026-07-31) — scan() AI总结补全B
+
+- 🔍 **scan() AI补全**：标签恢复后 AI 快照仍为空（最后AI消息无标签/版本清理后/首次使用）时，自动用 `generateQuietPrompt` → `generateRaw` 总结补全 B
+- 🎯 **`summarizeChatHistory(targetKind)`**：提取共享核心 `runSummarizeCore`，`targetKind='ai'` 补全 B（基于 b 演化），`'user'` 演化 b（基于 B）；scan 与用户总结复用同一套 Prompt/回退/60s 超时锁
+- 🚦 **`_initialSummaryDone` 防重**：初始/兜底扫描只补全一次，切换聊天时重置；总结完成后自动 `renderLastTwo` 刷新卡片
 
 ### v3.8.0 (2026-07-31) — 双快照模型 + b≠B 演化（对标 REQUIREMENTS.md）
 

@@ -1177,6 +1177,14 @@
       }
     }
 
+    // AI总结补全：标签恢复后AI快照仍为空（最后AI消息无标签/版本清理后/首次使用）→ 用AI总结补全B
+    // _initialSummaryDone：初始扫描/兜底扫描只补全一次，避免重复触发API；切换聊天时重置
+    if (!_initialSummaryDone && !hasContent(getSnapshot('ai')) && hasChatHistory()) {
+      _initialSummaryDone = true;
+      console.log('[WST] 🆕 AI快照为空，触发AI总结补全B...');
+      summarizeChatHistory('ai');
+    }
+
     var rendered = processMessageChain(allMessages);
     console.log('[WST] 状态链处理完成，渲染了 ' + rendered + ' 条消息的卡片');
     return allMessages.length;
@@ -1260,6 +1268,7 @@
   // ==================== 静默状态总结（需求2.2：b = B 经用户事件线性演化，b ≠ B） ====================
   var summarizeLock = false;
   var summarizeTimeout = null;
+  var _initialSummaryDone = false; // scan() AI补全标记
   var SUMMARIZE_TIMEOUT_MS = 60000;
 
   // 归一化生成结果（兼容字符串 / {mes} / {text} / {content} / {choices}）
@@ -1310,7 +1319,8 @@
   }
 
   // 构建总结Prompt：上一状态 + 最近聊天 + 演化规则（b ≠ B，线性逻辑）
-  function buildSummarizePrompt() {
+  // targetKind: 'ai' → 基于用户快照(b)推演AI状态(B)；'user' → 基于AI快照(B)推演用户状态(b)
+  function buildSummarizePrompt(targetKind) {
     var ctx = SillyTavern.getContext();
     if (!ctx.chat || !Array.isArray(ctx.chat) || ctx.chat.length < 2) return null;
 
@@ -1324,7 +1334,15 @@
     }
     if (!hist.trim()) return null;
 
-    var prevState = loadState();
+    // 上一状态选择：AI总结用最新用户快照(b)，用户总结用最新AI快照(B)；快照为空时回退当前状态
+    var prevState;
+    if (targetKind === 'ai') {
+      prevState = getSnapshot('user');
+      if (!hasContent(prevState)) prevState = loadState();
+    } else {
+      prevState = getSnapshot('ai');
+      if (!hasContent(prevState)) prevState = loadState();
+    }
     var wb = getWorldBookData();
     var fs = wb.favorabilitySystem || getDefaultFavorabilitySystem();
     var un = getUserPersonaName();
@@ -1350,15 +1368,24 @@
     console.log('[WST] ✅ 用户状态(b)已演化 - 时间:', state.time, '| 区域:', state.location);
   }
 
+  // AI状态总结结果落地：保存 B 快照（scan() AI总结补全/演化路径）
+  function applyAiSnapshot(state) {
+    saveState(state);
+    setSnapshot('ai', state);
+    lastStateSentHash = '';
+    console.log('[WST] ✅ AI状态(B)已补全 - 时间:', state.time, '| 区域:', state.location);
+  }
+
   // ES5 Promise 链实现（不依赖 async/await）
-  function summarizeChatHistory() {
+  // 共享总结核心：targetKind 'user' → 演化b；'ai' → 补全/演化B（scan()复用）
+  function runSummarizeCore(targetKind) {
     if (summarizeLock) {
       // 已有总结进行中：稍后重试，避免用户消息卡片停留在loading
-      setTimeout(summarizeChatHistory, 3000);
+      setTimeout(function () { runSummarizeCore(targetKind); }, 3000);
       return;
     }
     var ctx = SillyTavern.getContext();
-    var p = buildSummarizePrompt();
+    var p = buildSummarizePrompt(targetKind);
     if (!p) return;
     summarizeLock = true;
     summarizeTimeout = setTimeout(function () {
@@ -1372,12 +1399,21 @@
       if (summarizeTimeout) { clearTimeout(summarizeTimeout); summarizeTimeout = null; }
       var ns = parseSummaryResult(resultText);
       if (ns) {
-        // 核心约束：b 必须 ≠ B
-        var aiState = getSnapshot('ai');
-        if (hasContent(aiState) && JSON.stringify(ns) === JSON.stringify(aiState)) {
-          console.warn('[WST] ⚠️ 演化结果与AI状态(B)相同，未产生可观察变化');
+        if (targetKind === 'ai') {
+          // 核心约束：B 必须 ≠ b
+          var userState = getSnapshot('user');
+          if (hasContent(userState) && JSON.stringify(ns) === JSON.stringify(userState)) {
+            console.warn('[WST] ⚠️ AI总结结果与用户状态(b)相同，未产生可观察变化');
+          }
+          applyAiSnapshot(ns);
+        } else {
+          // 核心约束：b 必须 ≠ B
+          var aiState = getSnapshot('ai');
+          if (hasContent(aiState) && JSON.stringify(ns) === JSON.stringify(aiState)) {
+            console.warn('[WST] ⚠️ 演化结果与AI状态(B)相同，未产生可观察变化');
+          }
+          applyUserSnapshot(ns);
         }
-        applyUserSnapshot(ns);
       } else if (resultText) {
         console.warn('[WST] 总结返回非状态文本 (' + resultText.length + ' chars)');
       } else {
@@ -1435,6 +1471,11 @@
       console.warn('[WST] qP失败:', e && e.message);
       tryRaw();
     }
+  }
+
+  // 对外入口：默认演化用户状态(b)；scan()传 'ai' 复用同一核心补全AI状态(B)
+  function summarizeChatHistory(targetKind) {
+    runSummarizeCore(targetKind === 'ai' ? 'ai' : 'user');
   }
 
   function triggerSummarize() {
@@ -1584,7 +1625,12 @@
       }
 
       es.on(et.CHAT_CHANGED, function () {
-        currentChatId = getChatId();
+        var newChatId = getChatId();
+        // 仅真正切换聊天时重置，避免初始加载时与scanWithRetry重复触发AI总结
+        if (newChatId !== currentChatId) {
+          _initialSummaryDone = false;
+        }
+        currentChatId = newChatId;
         clearUserNameCache();
         lastStateSentHash = '';
         clearTimeout(timer);

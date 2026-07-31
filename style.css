@@ -67,8 +67,8 @@
 .wst-placeholder {
   color: #9ca3af !important;
   font-style: italic;
-  text-align: center;
-  padding: 12px 0 !important;
+  text-align: left;
+  padding: 2px 4px !important;
 }
 
 /* ========== 角色名高亮 ========== */
