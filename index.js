@@ -1241,14 +1241,16 @@
 
       var resultText = '';
 
-      // 方式1：generateRaw + JSON Schema（文档推荐，无聊天上下文）
+      // 方式1：generateRaw（无聊天上下文，prompt中要求JSON输出）
       try {
-        console.log('[WST] 🤖 generateRaw + JSON Schema 提取状态...');
-        var rawResult = await ctx.generateRaw({
-          systemPrompt: systemPrompt,
-          prompt: userPrompt,
-          jsonSchema: getStateJsonSchema()
-        });
+        console.log('[WST] 🤖 generateRaw 提取状态... (60s超时计时开始)');
+        var rawResult = await Promise.race([
+          ctx.generateRaw({
+            systemPrompt: systemPrompt,
+            prompt: userPrompt + '\n\n请严格输出JSON格式，不要任何额外文字：{"time":"","location":"","present":"","absent":"","hymen":"","sexCount":"","affection":"","appearance":"","memories":""}'
+          }),
+          new Promise(function(_, reject) { setTimeout(function() { reject(new Error('generateRaw 超时(60s)')); }, 60000); })
+        ]);
         if (typeof rawResult === 'string') resultText = rawResult;
         else if (rawResult && typeof rawResult === 'object') {
           resultText = rawResult.mes || rawResult.text || rawResult.content || '';
@@ -1259,15 +1261,17 @@
         console.warn('[WST] generateRaw 失败:', e.message);
       }
 
-      // 方式2 回退：generateQuietPrompt + JSON Schema
+      // 方式2 回退：generateQuietPrompt
       if (!resultText || resultText.length < 10) {
         try {
-          console.log('[WST] 回退到 generateQuietPrompt + JSON Schema...');
-          var qResult = await ctx.generateQuietPrompt({
-            quietPrompt: userPrompt,
-            skipWIAN: true,
-            jsonSchema: getStateJsonSchema()
-          });
+          console.log('[WST] 回退到 generateQuietPrompt... (60s超时)');
+          var qResult = await Promise.race([
+            ctx.generateQuietPrompt({
+              quietPrompt: userPrompt + '\n\n只用JSON输出：{"time":"...","location":"...",...}',
+              skipWIAN: true
+            }),
+            new Promise(function(_, reject) { setTimeout(function() { reject(new Error('generateQuietPrompt 超时(60s)')); }, 60000); })
+          ]);
           if (typeof qResult === 'string') resultText = qResult;
           else if (qResult && typeof qResult === 'object') {
             resultText = qResult.mes || qResult.text || qResult.content || '';
@@ -1336,12 +1340,35 @@
           cleanupOldCards(allMes);
         } else {
           console.log('[WST] ⚠️ 提取的状态为空');
+          recoverFromLoading();
         }
       } else {
         console.log('[WST] ⚠️ 提取返回内容过短');
+        recoverFromLoading();
       }
     } catch (e) {
       console.warn('[WST] 状态提取失败:', e.message);
+      // 超时/失败：尝试用已获取的部分数据
+      if (resultText && resultText.length > 10) {
+        console.log('[WST] ⚡ 尝试解析部分结果 (已获取 ' + resultText.length + ' chars)...');
+        var ps = parseSummary(resultText);
+        if (ps && (ps.time || ps.location || ps.present)) {
+          ps = filterUserFromState(ps);
+          saveState(ps);
+          lastStateSentHash = '';
+          var allMes2 = document.querySelectorAll('.mes');
+          var total2 = allMes2.length;
+          for (var j2 = Math.max(0, total2 - 2); j2 < total2; j2++) {
+            var idx2 = getMessageIndex(allMes2[j2]);
+            if (idx2 >= 0) renderCardOnMessage(allMes2[j2], ps, false);
+          }
+          console.log('[WST] ⚡ 部分结果已应用');
+        } else {
+          recoverFromLoading();
+        }
+      } else {
+        recoverFromLoading();
+      }
     } finally {
       summarizeLock = false;
     }
