@@ -1071,7 +1071,9 @@
   // 使用 setExtensionPrompt 注入状态（不修改聊天数组，不修改文本框）
   function injectStateToPrompt() {
     var state = loadState();
-    if (!hasContent(state)) return;
+    if (!shouldInject(state)) return;
+    var firstTime = isFirstTimeState(state) && hasChatHistory();
+    if (firstTime) console.log('[WST] 🆕 首次注入（状态为空，将触发AI回溯）');
     var stateText = buildStatePrompt(state);
     try {
       var ctx = SillyTavern.getContext();
