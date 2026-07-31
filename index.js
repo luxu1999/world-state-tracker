@@ -201,7 +201,7 @@
 
   // ==================== 状态持久化（对标st-memory-enhancement：存在chatMetadata中） ====================
   // 数据跟随聊天对象，切换聊天时ST自动加载/保存，天然不污染
-  var WST_VERSION = '3.8.9'; // 版本号：更新后首次使用自动清理旧数据
+  var WST_VERSION = '3.9.0'; // 版本号：更新后首次使用自动清理旧数据
 
   function getChatMetadata() {
     try {
@@ -986,33 +986,55 @@
   // 状态字段标签（用于定位状态块起点；长标签在前避免子串误匹配）
   var STATE_FIELD_KEYS = ['时间：', '时间:', '区域：', '区域:', '不在场角色：', '不在场角色:', '在场角色+BUFF：', '在场角色+BUFF:', '在场角色：', '在场角色:', '处女膜状态：', '处女膜状态:', '做爱次数：', '做爱次数:', '当前好感度：', '当前好感度:', '身体外貌：', '身体外貌:', '重要记忆点：', '重要记忆点:'];
 
-  // 从文本末尾定位状态块起始行：先找最后一个字段标签行，再往前扩展跳过所有字段行/记忆子行，取字段块最前一行
-  function findStateStartLine(rawText) {
+  // 定位状态块起点字符索引：优先按行（换行存在时准确），单行（<br> 渲染无换行）时用字段标签回溯
+  function findStateStartIdx(rawText) {
     if (!rawText) return -1;
-    var lines = rawText.split('\n');
     function isFieldLine(t) {
       for (var k = 0; k < STATE_FIELD_KEYS.length; k++) {
         if (t.indexOf(STATE_FIELD_KEYS[k]) === 0) return true;
       }
       return false;
     }
-    // 1) 从后往前找最后一个字段标签行
-    var lastFieldLine = -1;
-    for (var li = lines.length - 1; li >= 0; li--) {
-      var t = lines[li].trim();
-      if (!t) continue;
-      if (isFieldLine(t)) { lastFieldLine = li; break; }
+    function lastFieldPos(before) {
+      var pos = -1;
+      for (var k = 0; k < STATE_FIELD_KEYS.length; k++) {
+        var p = (before === undefined) ? rawText.lastIndexOf(STATE_FIELD_KEYS[k]) : rawText.lastIndexOf(STATE_FIELD_KEYS[k], before);
+        if (p > pos) pos = p;
+      }
+      return pos;
     }
-    if (lastFieldLine === -1) return -1;
-    // 2) 往前扩展：跳过字段行与记忆子行（- 角色名：…），直到遇到非字段行（正文）→ 字段块起点
-    var start = lastFieldLine;
-    for (var i = lastFieldLine - 1; i >= 0; i--) {
-      var tl = lines[i].trim();
-      if (!tl) continue;
-      if (isFieldLine(tl) || /^[-•●◆▪▸►]/.test(tl)) { start = i; }
-      else break;
+    // 1) 按行扫描（优先，准确）
+    var lines = rawText.split('\n');
+    if (lines.length > 1) {
+      var lastFieldLine = -1;
+      for (var li = lines.length - 1; li >= 0; li--) {
+        var t = lines[li].trim();
+        if (!t) continue;
+        if (isFieldLine(t)) { lastFieldLine = li; break; }
+      }
+      if (lastFieldLine !== -1) {
+        var start = lastFieldLine;
+        for (var i = lastFieldLine - 1; i >= 0; i--) {
+          var tl = lines[i].trim();
+          if (!tl) continue;
+          if (isFieldLine(tl) || /^[-•●◆▪▸►]/.test(tl)) { start = i; }
+          else break;
+        }
+        var idx = 0;
+        for (var j = 0; j < start; j++) idx += lines[j].length + 1;
+        return idx;
+      }
     }
-    return start;
+    // 2) 单行兜底：最后一个字段标签，向前回溯紧邻的字段标签（间距 >200 视为正文分隔）
+    var last = lastFieldPos();
+    if (last === -1) return -1;
+    var st = last;
+    while (true) {
+      var prev = lastFieldPos(st - 1);
+      if (prev === -1 || (st - prev) > 200) break;
+      st = prev;
+    }
+    return st;
   }
 
   // 纯文本兜底：从消息末尾提取状态字段（不需要任何HTML标签）
@@ -1021,10 +1043,9 @@
     if (!rawText || rawText.length < 20) return null;
     // 从文本末尾取最后2000字符（状态通常在末尾）
     var tail = rawText.length > 2000 ? rawText.substring(rawText.length - 2000) : rawText;
-    var stateStartLine = findStateStartLine(tail);
-    if (stateStartLine === -1) return null;
-    var lines = tail.split('\n');
-    var stateText = lines.slice(stateStartLine).join('\n');
+    var stateStartIdx = findStateStartIdx(tail);
+    if (stateStartIdx === -1) return null;
+    var stateText = tail.substring(stateStartIdx);
     console.log('[WST] 纯文本兜底提取 (' + stateText.length + ' chars):', stateText.substring(0, 100));
     return parseSummary(stateText);
   }
@@ -1056,13 +1077,71 @@
   // v3.8.9：按行扫描找状态块起点（任意字段标签行均可），不再依赖「时间：」开头（AI 可能省略时间字段）
   function hideRawStateText(mesTextEl, rawText) {
     try {
-      // 从最后一行往前找第一个字段标签行 → 状态块起点（不依赖「时间：」开头）
-      var stateStartLine = findStateStartLine(rawText);
-      if (stateStartLine === -1) return;
-      // 状态块 = 从起点行首到文本末尾（含末尾可能附带的 [第X轮] 用户意图 等杂项，一并隐藏）
-      var lines = rawText.split('\n');
-      var stateStartIdx = 0;
-      for (var li2 = 0; li2 < stateStartLine; li2++) stateStartIdx += lines[li2].length + 1;
+      // v3.9.0：完全基于 DOM 文本节点定位状态块（不再用外部 rawText 算偏移）。
+      // ST markdown 渲染把换行变成 <br>，textContent 无换行，旧偏移法会错位。
+      function startsWithFieldLabel(t) {
+        for (var k = 0; k < STATE_FIELD_KEYS.length; k++) {
+          if (t.indexOf(STATE_FIELD_KEYS[k]) === 0) return true;
+        }
+        return false;
+      }
+      var textNodes = [];
+      (function collectTextNodes(root) {
+        var kids = root.childNodes;
+        if (!kids) return;
+        for (var k = 0; k < kids.length; k++) {
+          var c = kids[k];
+          if (c.nodeType === 3) textNodes.push(c); // TEXT_NODE
+          else if (c.nodeType === 1) collectTextNodes(c); // ELEMENT_NODE
+        }
+      })(mesTextEl);
+      if (textNodes.length === 0) return;
+
+      // 1) 从后往前找最后一个「以字段标签开头」的文本节点 → 状态块末尾字段
+      var startNode = null;
+      for (var n = textNodes.length - 1; n >= 0; n--) {
+        var tv = (textNodes[n].nodeValue || '').trim();
+        if (!tv) continue;
+        if (startsWithFieldLabel(tv)) { startNode = textNodes[n]; break; }
+      }
+      if (!startNode || !startNode.parentNode) { fallbackHideByHTML(mesTextEl, rawText); return; }
+
+      // 2) 往前扩展：跳过字段行与记忆子行（- 角色名：…），直到正文 → 状态块起点节点
+      var idx = textNodes.indexOf(startNode);
+      var finalStart = startNode;
+      for (var i = idx; i >= 0; i--) {
+        var t2 = (textNodes[i].nodeValue || '').trim();
+        if (!t2) continue;
+        if (startsWithFieldLabel(t2) || /^[-•●◆▪▸►]/.test(t2)) { finalStart = textNodes[i]; }
+        else break;
+      }
+
+      // 3) finalStart 及其之后所有兄弟节点（含 <br>/<p> 等元素）移入隐藏 span
+      var parent = finalStart.parentNode;
+      var span = document.createElement('span');
+      span.className = 'wst-raw-summary';
+      span.style.display = 'none';
+      // 先把 finalStart 之后的兄弟移入 span（保持顺序）
+      var sib = finalStart.nextSibling;
+      while (sib) {
+        var nxt = sib.nextSibling;
+        span.appendChild(sib);
+        sib = nxt;
+      }
+      // span 插到 finalStart 原位置，再把 finalStart 移入 span 最前
+      parent.insertBefore(span, finalStart);
+      span.insertBefore(finalStart, span.firstChild);
+      console.log('[WST] 🙈 已隐藏正文末尾的状态块 (DOM节点法)');
+    } catch(e) {
+      console.warn('[WST] 隐藏状态文本失败:', e.message);
+    }
+  }
+
+  // 回退：innerHTML 字符串匹配隐藏（DOM 结构异常时使用）
+  function fallbackHideByHTML(mesTextEl, rawText) {
+    try {
+      var stateStartIdx = findStateStartIdx(rawText);
+      if (stateStartIdx === -1) return;
       var stateText = rawText.substring(stateStartIdx);
       var html = mesTextEl.innerHTML || '';
       var escaped = escapeHTML(stateText);
@@ -1073,10 +1152,7 @@
       var before = html.substring(0, hi);
       var after = html.substring(hi + len);
       mesTextEl.innerHTML = before + '<span class="wst-raw-summary" style="display:none;">' + escaped + '</span>' + after;
-      console.log('[WST] 🙈 已隐藏正文末尾的状态块 (' + stateText.length + ' chars)');
-    } catch(e) {
-      console.warn('[WST] 隐藏状态文本失败:', e.message);
-    }
+    } catch(e) { /* 忽略 */ }
   }
 
   // 获取消息纯文本（剔除已隐藏的原始摘要，避免兜底重复提取同一状态）
