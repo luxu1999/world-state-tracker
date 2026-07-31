@@ -940,27 +940,42 @@
     }
   }
 
-  // 按时间顺序处理所有消息，维护状态链（支持页面重载后恢复）
+  // 删除消息上的卡片
+  function removeCardFromMessage(msgEl) {
+    if (!msgEl) return;
+    var header = msgEl.querySelector('.wst-header');
+    var body = msgEl.querySelector('.wst-body');
+    if (header) header.remove();
+    if (body) body.remove();
+  }
+
+  // 按时间顺序处理所有消息，维护状态链（仅最后2条渲染卡片）
   function processMessageChain(allMessages) {
     var runningState = loadState(); // 从持久化存储加载最新基线
     var msgStatesMap = getMsgStatesMap(); // 逐消息快照
+    var total = allMessages.length;
+    var last2Start = Math.max(0, total - 2);
     var updatedGlobal = false;
     var updatedMsgs = false;
     var rendered = 0;
 
-    for (var i = 0; i < allMessages.length; i++) {
+    for (var i = 0; i < total; i++) {
       var msg = allMessages[i];
       var msgIdx = getMessageIndex(msg);
       if (msgIdx < 0) continue;
 
       if (msg.classList.contains('system_mes')) continue;
 
-      // 优先从快照恢复（重载后S-summary已从DOM中隐藏，无法重新提取）
+      // 优先从快照恢复
       var storedState = msgStatesMap[msgIdx];
       if (storedState && hasContent(storedState)) {
-        renderCardOnMessage(msg, storedState);
         runningState = storedState;
-        rendered++;
+        if (i >= last2Start) {
+          renderCardOnMessage(msg, storedState);
+          rendered++;
+        } else {
+          removeCardFromMessage(msg);
+        }
         continue;
       }
 
@@ -970,7 +985,6 @@
       var isUser = isUserMessage(msg);
 
       if (!isUser) {
-        // AI消息：尝试提取S-summary（仅在首次扫描时能找到）
         var newState = extractSummaryFromDOM(mesText);
         if (newState) {
           runningState = mergeState(runningState, newState);
@@ -979,14 +993,15 @@
           updatedGlobal = true;
         }
       }
-      // 用户消息：保持runningState不变
 
-      // 渲染卡片并保存快照
-      if (hasContent(runningState)) {
+      // 仅最后2条渲染卡片，旧消息清除卡片
+      if (i >= last2Start && hasContent(runningState)) {
         renderCardOnMessage(msg, runningState);
         msgStatesMap[msgIdx] = runningState;
         updatedMsgs = true;
         rendered++;
+      } else if (i < last2Start) {
+        removeCardFromMessage(msg);
       }
     }
 
@@ -996,57 +1011,73 @@
     return rendered;
   }
 
-  // 处理最新AI消息（CHARACTER_MESSAGE_RENDERED事件触发）
+  // 处理最新消息（用户消息触发总结演化，AI消息提取S-summary）
+  var _processingLatest = false;
   function processLatestMessage() {
+    if (_processingLatest) return;
     var allMessages = document.querySelectorAll('.mes');
     if (allMessages.length === 0) return;
 
     var lastMsg = allMessages[allMessages.length - 1];
-    var lastIdx = getMessageIndex(lastMsg);
+    if (lastMsg.classList.contains('system_mes')) return;
 
-    // 先给前一条消息（用户消息）补卡片
-    if (allMessages.length >= 2 && lastIdx >= 1) {
-      var prevMsg = allMessages[allMessages.length - 2];
-      var prevIdx = getMessageIndex(prevMsg);
-      var currentState = loadState();
-      if (hasContent(currentState) && prevIdx >= 0) {
-        renderCardOnMessage(prevMsg, currentState);
-        var msgStatesMap = getMsgStatesMap();
-        msgStatesMap[prevIdx] = currentState;
-        saveMsgStatesMap(msgStatesMap);
+    var isUser = isUserMessage(lastMsg);
+
+    if (isUser) {
+      // 用户消息：触发静默总结获取演化后状态
+      _processingLatest = true;
+      console.log('[WST] 用户消息，触发总结演化状态...');
+      summarizeChatHistory().then(function() {
+        _processingLatest = false;
+        var evolvedState = loadState();
+        if (hasContent(evolvedState)) {
+          renderCardOnMessage(lastMsg, evolvedState);
+          var lastIdx = getMessageIndex(lastMsg);
+          if (lastIdx >= 0) {
+            var map = getMsgStatesMap();
+            map[lastIdx] = evolvedState;
+            saveMsgStatesMap(map);
+          }
+          cleanupOldCards(allMessages);
+        }
+      }).catch(function() {
+        _processingLatest = false;
+        var s = loadState();
+        if (hasContent(s)) renderCardOnMessage(lastMsg, s);
+      });
+    } else {
+      // AI消息：提取S-summary
+      var mesText = lastMsg.querySelector('.mes_text');
+      if (mesText) {
+        var newState = extractSummaryFromDOM(mesText);
+        if (newState) {
+          var oldState = loadState();
+          var merged = mergeState(oldState, newState);
+          merged = filterUserFromState(merged);
+          saveState(merged);
+          renderCardOnMessage(lastMsg, merged);
+          var lastIdx = getMessageIndex(lastMsg);
+          if (lastIdx >= 0) {
+            var map = getMsgStatesMap();
+            map[lastIdx] = merged;
+            saveMsgStatesMap(map);
+          }
+          console.log('[WST] AI S-summary提取成功');
+          lastStateSentHash = '';
+        } else {
+          var s = loadState();
+          if (hasContent(s)) renderCardOnMessage(lastMsg, s);
+        }
+        cleanupOldCards(allMessages);
       }
     }
+  }
 
-    if (lastMsg.classList.contains('system_mes')) return;
-    if (isUserMessage(lastMsg)) return;
-
-    var mesText = lastMsg.querySelector('.mes_text');
-    if (!mesText) return;
-
-    var newState = extractSummaryFromDOM(mesText);
-    if (newState) {
-      var oldState = loadState();
-      var merged = mergeState(oldState, newState);
-      merged = filterUserFromState(merged);
-      saveState(merged);
-      renderCardOnMessage(lastMsg, merged);
-      if (lastIdx >= 0) {
-        var msgStatesMap = getMsgStatesMap();
-        msgStatesMap[lastIdx] = merged;
-        saveMsgStatesMap(msgStatesMap);
-      }
-      console.log('[WST] 最新消息提取到S-summary，状态已更新');
-      lastStateSentHash = '';
-    } else {
-      var currentState = loadState();
-      if (hasContent(currentState)) {
-        renderCardOnMessage(lastMsg, currentState);
-        if (lastIdx >= 0) {
-          var msgStatesMap = getMsgStatesMap();
-          msgStatesMap[lastIdx] = currentState;
-          saveMsgStatesMap(msgStatesMap);
-        }
-      }
+  function cleanupOldCards(allMessages) {
+    var total = allMessages.length;
+    var keepStart = Math.max(0, total - 2);
+    for (var i = 0; i < keepStart; i++) {
+      removeCardFromMessage(allMessages[i]);
     }
   }
 
