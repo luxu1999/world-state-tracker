@@ -201,7 +201,7 @@
 
   // ==================== 状态持久化（对标st-memory-enhancement：存在chatMetadata中） ====================
   // 数据跟随聊天对象，切换聊天时ST自动加载/保存，天然不污染
-  var WST_VERSION = '3.8.8'; // 版本号：更新后首次使用自动清理旧数据
+  var WST_VERSION = '3.8.9'; // 版本号：更新后首次使用自动清理旧数据
 
   function getChatMetadata() {
     try {
@@ -572,15 +572,24 @@
     flushField();
 
     // 解析重要记忆点（可能在 currentValue 中，也可能在多行中）
+    // v3.8.9：改为逐行解析，遇到非记忆格式行（如 [第X轮] 用户意图：xxx）立即停止，
+    // 避免酒馆预设注入的意图标记被当作记忆点吞入
     var allText = text;
     var memSection = allText.match(/重要记忆点[：:]\s*\n?([\s\S]*?)$/);
     if (memSection) {
       var memText = memSection[1];
-      var charPattern = /[-•●◆▪▸►]?[ \t]*([^：:\n]{1,12})[：:]\s*(.+)/g;
-      var match;
-      while ((match = charPattern.exec(memText)) !== null) {
-        var charName = match[1].trim();
-        var memList = match[2].split(/[|｜、\n]/).map(function (m) { return m.trim(); })
+      var memLines = memText.split('\n');
+      var charPattern = /^[-•●◆▪▸►]?[ \t]*([^：:\n]{1,12})[：:]\s*(.+)$/;
+      for (var mi = 0; mi < memLines.length; mi++) {
+        var ml = memLines[mi].trim();
+        if (!ml) continue; // 空行跳过（允许记忆行之间有换行）
+        // 非记忆内容：方括号标记（如 [第X轮]）、意图标记、或非 角色名：内容 格式 → 停止解析
+        if (ml.charAt(0) === '[') break;
+        if (/用户意图|意图[：:]/.test(ml)) break;
+        var mm = ml.match(charPattern);
+        if (!mm) break;
+        var charName = mm[1].trim();
+        var memList = mm[2].split(/[|｜、\n]/).map(function (m) { return m.trim(); })
           .filter(function (m) { return m && m !== '-' && m !== '•'; });
         if (charName && memList.length > 0) state.memories[charName] = memList;
       }
@@ -828,6 +837,7 @@
     lines.push('重要记忆点：');
     lines.push('- 琴：帮助旅行者解决风魔龙危机|欠旅行者一个人情');
     lines.push('规则：严格按[追踪规则]0~12条执行；无明确证据的字段一律复制上一状态；时间精确到分钟；记忆每角色≤6条合计≤70字。');
+    lines.push('状态块输出完毕后必须立即结束，禁止在状态块后附带任何其他内容（如 [第X轮] 用户意图 等标记）。');
     lines.push('⚠️ 若省略状态输出，世界状态将无法更新，角色记忆会丢失！');
     lines.push('</WST_世界状态>');
 
@@ -973,16 +983,48 @@
 
   // ==================== 处理消息（按时间顺序维护状态链） ====================
 
+  // 状态字段标签（用于定位状态块起点；长标签在前避免子串误匹配）
+  var STATE_FIELD_KEYS = ['时间：', '时间:', '区域：', '区域:', '不在场角色：', '不在场角色:', '在场角色+BUFF：', '在场角色+BUFF:', '在场角色：', '在场角色:', '处女膜状态：', '处女膜状态:', '做爱次数：', '做爱次数:', '当前好感度：', '当前好感度:', '身体外貌：', '身体外貌:', '重要记忆点：', '重要记忆点:'];
+
+  // 从文本末尾定位状态块起始行：先找最后一个字段标签行，再往前扩展跳过所有字段行/记忆子行，取字段块最前一行
+  function findStateStartLine(rawText) {
+    if (!rawText) return -1;
+    var lines = rawText.split('\n');
+    function isFieldLine(t) {
+      for (var k = 0; k < STATE_FIELD_KEYS.length; k++) {
+        if (t.indexOf(STATE_FIELD_KEYS[k]) === 0) return true;
+      }
+      return false;
+    }
+    // 1) 从后往前找最后一个字段标签行
+    var lastFieldLine = -1;
+    for (var li = lines.length - 1; li >= 0; li--) {
+      var t = lines[li].trim();
+      if (!t) continue;
+      if (isFieldLine(t)) { lastFieldLine = li; break; }
+    }
+    if (lastFieldLine === -1) return -1;
+    // 2) 往前扩展：跳过字段行与记忆子行（- 角色名：…），直到遇到非字段行（正文）→ 字段块起点
+    var start = lastFieldLine;
+    for (var i = lastFieldLine - 1; i >= 0; i--) {
+      var tl = lines[i].trim();
+      if (!tl) continue;
+      if (isFieldLine(tl) || /^[-•●◆▪▸►]/.test(tl)) { start = i; }
+      else break;
+    }
+    return start;
+  }
+
   // 纯文本兜底：从消息末尾提取状态字段（不需要任何HTML标签）
+  // v3.8.9：按行扫描状态块起点（任意字段标签行），不再依赖「时间：」开头（AI 可能省略时间字段）
   function extractStateFromText(rawText) {
     if (!rawText || rawText.length < 20) return null;
     // 从文本末尾取最后2000字符（状态通常在末尾）
     var tail = rawText.length > 2000 ? rawText.substring(rawText.length - 2000) : rawText;
-    // 尝试找末尾的"时间："或"时间:"作为起点（lastIndexOf 优先取末尾状态块，避免正文中的时间字样）
-    var timeIdx = tail.lastIndexOf('时间：');
-    if (timeIdx === -1) timeIdx = tail.lastIndexOf('时间:');
-    if (timeIdx === -1) return null;
-    var stateText = tail.substring(timeIdx);
+    var stateStartLine = findStateStartLine(tail);
+    if (stateStartLine === -1) return null;
+    var lines = tail.split('\n');
+    var stateText = lines.slice(stateStartLine).join('\n');
     console.log('[WST] 纯文本兜底提取 (' + stateText.length + ' chars):', stateText.substring(0, 100));
     return parseSummary(stateText);
   }
@@ -1002,9 +1044,7 @@
         if (mesText.querySelector('.wst-raw-summary')) continue;
         var rawText = mesText.textContent || mesText.innerText || '';
         if (!rawText) continue;
-        var timeIdx = rawText.lastIndexOf('时间：');
-        if (timeIdx === -1) timeIdx = rawText.lastIndexOf('时间:');
-        if (timeIdx === -1) continue;
+        // v3.8.9：隐藏逻辑内部自行扫描字段标签行起点，无需前置检查
         hideRawStateText(mesText, rawText);
       } catch(e) {
         // 单条消息失败不影响其它消息
@@ -1013,12 +1053,17 @@
   }
 
   // 隐藏消息正文末尾的纯文本状态块（避免状态文本显示在正文中，界面保持整洁）
+  // v3.8.9：按行扫描找状态块起点（任意字段标签行均可），不再依赖「时间：」开头（AI 可能省略时间字段）
   function hideRawStateText(mesTextEl, rawText) {
     try {
-      var timeIdx = rawText.lastIndexOf('时间：');
-      if (timeIdx === -1) timeIdx = rawText.lastIndexOf('时间:');
-      if (timeIdx === -1) return;
-      var stateText = rawText.substring(timeIdx);
+      // 从最后一行往前找第一个字段标签行 → 状态块起点（不依赖「时间：」开头）
+      var stateStartLine = findStateStartLine(rawText);
+      if (stateStartLine === -1) return;
+      // 状态块 = 从起点行首到文本末尾（含末尾可能附带的 [第X轮] 用户意图 等杂项，一并隐藏）
+      var lines = rawText.split('\n');
+      var stateStartIdx = 0;
+      for (var li2 = 0; li2 < stateStartLine; li2++) stateStartIdx += lines[li2].length + 1;
+      var stateText = rawText.substring(stateStartIdx);
       var html = mesTextEl.innerHTML || '';
       var escaped = escapeHTML(stateText);
       var hi = html.lastIndexOf(escaped);
@@ -1028,7 +1073,7 @@
       var before = html.substring(0, hi);
       var after = html.substring(hi + len);
       mesTextEl.innerHTML = before + '<span class="wst-raw-summary" style="display:none;">' + escaped + '</span>' + after;
-      console.log('[WST] 🙈 已隐藏正文末尾的状态文本 (' + stateText.length + ' chars)');
+      console.log('[WST] 🙈 已隐藏正文末尾的状态块 (' + stateText.length + ' chars)');
     } catch(e) {
       console.warn('[WST] 隐藏状态文本失败:', e.message);
     }
@@ -1297,7 +1342,7 @@
       '身体外貌：',
       '重要记忆点：',
       '- 角色名：记忆1|记忆2',
-      '[追踪规则]：仅追踪非用户女性角色，男性/NPC/魔王一律不记录。最小变化！无明确证据的字段一律严格复制上一状态：时间按事件推进（对话几分钟/战斗几十分钟/旅行数小时天，无流逝则不变，用户给定以用户为准）；区域仅明确移动时更新；在场仅明确加入/离开/获得BUFF时更新，括号内只写BUFF（回溯魔法/中毒等），禁止写身体状态（全裸/流血/昏睡/衣服），无BUFF只写角色名；不在场仅随在场变化，无则写「无」或「所有角色都在场」；处女膜仅破处性交时更新；做爱次数仅性交射精时+1；好感度仅明确变化时更新（有世界书系统则参照）；记忆仅新事件追加，每角色≤6条合计≤70字；外貌仅换装/脱衣/发型变化时更新，严禁凭空写裸体或换衣。若省略状态输出，世界状态将无法更新。]'
+      '[追踪规则]：仅追踪非用户女性角色，男性/NPC/魔王一律不记录。最小变化！无明确证据的字段一律严格复制上一状态：时间按事件推进（对话几分钟/战斗几十分钟/旅行数小时天，无流逝则不变，用户给定以用户为准）；区域仅明确移动时更新；在场仅明确加入/离开/获得BUFF时更新，括号内只写BUFF（回溯魔法/中毒等），禁止写身体状态（全裸/流血/昏睡/衣服），无BUFF只写角色名；不在场仅随在场变化，无则写「无」或「所有角色都在场」；处女膜仅破处性交时更新；做爱次数仅性交射精时+1；好感度仅明确变化时更新（有世界书系统则参照）；记忆仅新事件追加，每角色≤6条合计≤70字；外貌仅换装/脱衣/发型变化时更新，严禁凭空写裸体或换衣。状态块输出完毕后立即结束，禁止附带任何其他内容（如[第X轮]用户意图等标记）。若省略状态输出，世界状态将无法更新。]'
     ].join('\n');
 
     // 注入当前状态 + 输出指令作为 system prompt
@@ -1479,6 +1524,7 @@
       '区域仅明确移动时更新；在场角色+BUFF仅明确加入/离开/获得BUFF时更新，括号内只写BUFF（回溯魔法/中毒等），禁止写身体状态（全裸/流血/昏睡/衣服），无BUFF只写角色名；' +
       '不在场仅随在场变化，无则写「无」或「所有角色都在场」；处女膜仅破处性交时更新；做爱次数仅性交射精时+1；' +
       '好感度仅明确变化时更新；外貌仅换装/脱衣/发型变化时更新；' +
+      '状态块输出完毕后立即结束，禁止附带任何其他内容（如[第X轮]用户意图等标记）。' +
       '好感度系统=' + fs +
       (un ? '排除用户角色「' + un + '」。' : '') +
       (wb.allKeys.length > 0 ? '角色仅限：' + wb.allKeys.join('、') + '。' : '') +
