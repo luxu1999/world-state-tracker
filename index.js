@@ -39,7 +39,7 @@
     { key: 'memories',   label: '重要记忆点：' },
   ];
 
-  // 每消息独立状态快照 — 已废弃，使用 processMessageChain 按顺序维护状态链
+  // 状态快照模型：每聊天仅保存 2 个快照（最新AI→B + 最新用户→b），见下方 getSnapshot/setSnapshot
 
   // ==================== 工具函数 ====================
   function escapeHTML(s) {
@@ -201,7 +201,7 @@
 
   // ==================== 状态持久化（对标st-memory-enhancement：存在chatMetadata中） ====================
   // 数据跟随聊天对象，切换聊天时ST自动加载/保存，天然不污染
-  var WST_VERSION = '3.7.0'; // 版本号：更新后首次使用自动清理旧数据
+  var WST_VERSION = '3.8.0'; // 版本号：更新后首次使用自动清理旧数据
 
   function getChatMetadata() {
     try {
@@ -221,9 +221,13 @@
   function loadState() {
     try {
       var meta = getChatMetadata();
-      // 版本检查：更新后首次使用，清理旧数据
+      // 版本检查：更新后首次使用，清理旧版本残留数据（需求2.4）
       if (meta.wst_version !== WST_VERSION) {
-        console.log('[WST] 🔄 版本更新 (' + (meta.wst_version || '无') + ' → ' + WST_VERSION + ')');
+        console.log('[WST] 🔄 版本更新 (' + (meta.wst_version || '无') + ' → ' + WST_VERSION + ')，清理旧数据');
+        delete meta.wst_state;
+        delete meta.wst_ai_state;
+        delete meta.wst_user_state;
+        delete meta.wst_msg_states;
         meta.wst_version = WST_VERSION;
         triggerChatSave();
       }
@@ -283,22 +287,34 @@
     } catch (e) { console.warn('[WST] 保存状态失败:', e); }
   }
 
-  // ==================== 逐消息状态快照（存在chatMetadata中，跟随聊天对象） ====================
+  // ==================== 双状态快照（需求2.3：每聊天仅保存 最新AI + 最新用户 两个快照） ====================
+  // wst_ai_state   = 最新AI消息上的状态（B）
+  // wst_user_state = 最新用户消息上的状态（b）
+  // 新状态产生时旧状态被顶替（替换而非追加），跟随聊天对象互不污染
 
-  function getMsgStatesMap() {
+  function getSnapshot(kind) {
+    loadState(); // 版本检查/清理优先：快照读取前确保旧数据已清（需求2.4）
     try {
       var meta = getChatMetadata();
-      return meta.wst_msg_states || {};
-    } catch(e) { return {}; }
+      var key = kind === 'user' ? 'wst_user_state' : 'wst_ai_state';
+      if (meta[key]) {
+        var state = typeof meta[key] === 'string' ? JSON.parse(meta[key]) : meta[key];
+        return sanitizeState(state);
+      }
+    } catch(e) { console.warn('[WST] 读取快照失败:', e.message); }
+    return createEmptyState();
   }
 
-  function saveMsgStatesMap(map) {
+  function setSnapshot(kind, state) {
+    var clean = filterUserFromState(state);
     try {
       var meta = getChatMetadata();
-      meta.wst_msg_states = map;
+      var key = kind === 'user' ? 'wst_user_state' : 'wst_ai_state';
+      meta[key] = clean;
       meta.wst_version = WST_VERSION;
       triggerChatSave();
-    } catch(e) { console.warn('[WST] 保存消息状态快照失败:', e); }
+    } catch(e) { console.warn('[WST] 保存快照失败:', e); }
+    return clean;
   }
 
   function getMessageIndex(msgEl) {
@@ -769,6 +785,7 @@
     lines.push('3. 在场角色 = 当前场景（最近消息对话场景）中出现的所有女性角色。');
     lines.push('4. 不在场角色 = 之前出现过但当前不在主角所在场景的女性角色。');
     lines.push('   格式：角色名-在做什么（≤10字）。当前场景中的角色绝不能误判为不在场。');
+    lines.push('5. 每次输出的状态必须与上一状态不同：至少一个字段有可观察的变化（时间推进、位置移动、角色加入/离开、好感变化等），且变化必须符合聊天内容的线性逻辑。');
     lines.push('   禁止泛称！不允许写"七神""众人""其他角色"等非具体角色名。');
 
     // 世界书角色清单
@@ -806,13 +823,14 @@
     lines.push('- 角色名：记忆1|记忆2');
     lines.push('-->');
     lines.push('时间 = 上一轮时间 + 本轮事件大致经历的时长。重要记忆点每人最多6条，每条不超过70字。');
+    lines.push('新状态必须与上一状态不同（至少一个字段有可观察变化），且变化必须符合本轮聊天内容的线性逻辑。');
     lines.push('</WST_世界状态>');
 
     return lines.join('\n');
   }
 
   // ==================== 卡片渲染 ====================
-  function buildCardHTML(state) {
+  function buildCardHTML(state, kind, loading) {
     var isEmpty = !hasContent(state);
     var valueHTML = [];
     if (isEmpty) {
@@ -847,7 +865,7 @@
     }
 
     return (
-      '<div class="wst-header wst-collapsed">' +
+      '<div class="wst-header wst-collapsed' + (loading ? ' wst-loading' : '') + '" data-wst-kind="' + (kind || 'ai') + '">' +
         '<span class="wst-triangle"></span>' +
         '📋 状态追踪' +
       '</div>' +
@@ -857,6 +875,11 @@
 
   function populateCard(cardBody, state) {
     if (!cardBody || !state) return;
+    // 空状态：整卡替换为占位提示（版本清理/首次使用后刷新）
+    if (!hasContent(state)) {
+      cardBody.innerHTML = '<div class="wst-body__line wst-placeholder" data-wst-key="time" title="点击编辑初始状态">点击任意行编辑初始状态</div>';
+      return;
+    }
     var lines = cardBody.querySelectorAll('.wst-body__line');
     for (var i = 0; i < lines.length; i++) {
       var line = lines[i];
@@ -949,6 +972,20 @@
     return parseSummary(stateText);
   }
 
+  // 获取消息纯文本（剔除已隐藏的原始摘要，避免兜底重复提取同一状态）
+  function getCleanMessageText(mesText) {
+    try {
+      var clone = mesText.cloneNode(true);
+      var hidden = clone.querySelectorAll('.wst-raw-summary');
+      for (var i = 0; i < hidden.length; i++) {
+        if (hidden[i].parentNode) hidden[i].parentNode.removeChild(hidden[i]);
+      }
+      return clone.textContent || clone.innerText || '';
+    } catch(e) {
+      return mesText.textContent || mesText.innerText || '';
+    }
+  }
+
   // 通过 mesid 属性精确定位消息在聊天数组中的位置
   function isUserMessage(msgEl) {
     var mesid = msgEl.getAttribute('mesid');
@@ -983,15 +1020,22 @@
     } catch(e) { return false; }
   }
 
-  // 为单条消息渲染卡片
-  function renderCardOnMessage(msgEl, state) {
+  // 为单条消息渲染卡片（kind: 'ai' → B 快照，'user' → b 快照）
+  function renderCardOnMessage(msgEl, state, kind, loading) {
     if (!msgEl || !state) return;
+    kind = kind || 'ai';
     var existingBody = msgEl.querySelector('.wst-body');
     if (existingBody) {
       populateCard(existingBody, state);
+      var existingHeader = msgEl.querySelector('.wst-header');
+      if (existingHeader) {
+        existingHeader.setAttribute('data-wst-kind', kind);
+        if (loading) existingHeader.classList.add('wst-loading');
+        else existingHeader.classList.remove('wst-loading');
+      }
     } else {
       var temp = document.createElement('div');
-      temp.innerHTML = buildCardHTML(state);
+      temp.innerHTML = buildCardHTML(state, kind, loading);
       while (temp.firstChild) msgEl.appendChild(temp.firstChild);
     }
   }
@@ -1005,70 +1049,52 @@
     if (body) body.remove();
   }
 
-  // 按时间顺序处理所有消息，维护状态链（仅最后2条渲染卡片）
-  function processMessageChain(allMessages) {
-    var runningState = loadState(); // 从持久化存储加载最新基线
-    var msgStatesMap = getMsgStatesMap(); // 逐消息快照
-    var total = allMessages.length;
-    var last2Start = Math.max(0, total - 2);
-    var updatedGlobal = false;
-    var updatedMsgs = false;
-    var rendered = 0;
+  // ==================== 消息处理（需求2.1/2.2：仅最后2条显示卡片，AI→B，用户→b≠B） ====================
 
-    for (var i = 0; i < total; i++) {
-      var msg = allMessages[i];
-      var msgIdx = getMessageIndex(msg);
-      if (msgIdx < 0) continue;
-
-      if (msg.classList.contains('system_mes')) continue;
-
-      // 优先从快照恢复
-      var storedState = msgStatesMap[msgIdx];
-      if (storedState) {
-        runningState = storedState;
-        if (i >= last2Start) {
-          renderCardOnMessage(msg, storedState);
-          rendered++;
-        } else {
-          removeCardFromMessage(msg);
-        }
-        continue;
-      }
-
-      var mesText = msg.querySelector('.mes_text');
-      if (!mesText) continue;
-
-      var isUser = isUserMessage(msg);
-
-      if (!isUser) {
-        var newState = extractSummaryFromDOM(mesText);
-        if (newState) {
-          runningState = mergeState(runningState, newState);
-          runningState = filterUserFromState(runningState);
-          saveState(runningState);
-          updatedGlobal = true;
-        }
-      }
-
-      // 仅最后2条渲染卡片，旧消息清除卡片
-      if (i >= last2Start) {
-        renderCardOnMessage(msg, runningState);
-        msgStatesMap[msgIdx] = runningState;
-        updatedMsgs = true;
-        rendered++;
-      } else if (i < last2Start) {
-        removeCardFromMessage(msg);
-      }
+  // 查找最后一条AI消息DOM
+  function findLastAiMessageEl(allMessages) {
+    for (var i = allMessages.length - 1; i >= 0; i--) {
+      if (!allMessages[i].classList.contains('system_mes') && !isUserMessage(allMessages[i])) return allMessages[i];
     }
-
-    // 持久化快照
-    if (updatedMsgs) saveMsgStatesMap(msgStatesMap);
-    if (updatedGlobal) lastStateSentHash = '';
-    return rendered;
+    return null;
   }
 
-  // 处理最新消息（debounce后触发，render loading → extract → update）
-  // 处理最新消息：AI回复提取状态，用户消息继承上一条状态
+  // 从消息DOM提取状态：HTML注释/S-summary优先，纯文本兜底（跳过已隐藏的原始摘要）
+  function extractStateFromMessage(mesText) {
+    if (!mesText) return null;
+    var state = extractSummaryFromDOM(mesText);
+    if (!state || !state.time) {
+      state = extractStateFromText(getCleanMessageText(mesText));
+    }
+    return state;
+  }
+
+  // 渲染最后2条消息的卡片：AI消息 → B快照，用户消息 → b快照（需求2.1）
+  function renderLastTwo(allMessages) {
+    var total = allMessages.length;
+    var start = Math.max(0, total - 2);
+    var aiState = getSnapshot('ai');
+    var userState = getSnapshot('user');
+    var latest = loadState();
+    for (var i = start; i < total; i++) {
+      var msg = allMessages[i];
+      if (msg.classList.contains('system_mes')) continue;
+      var isUser = isUserMessage(msg);
+      var state = isUser
+        ? (hasContent(userState) ? userState : latest)
+        : (hasContent(aiState) ? aiState : latest);
+      renderCardOnMessage(msg, state, isUser ? 'user' : 'ai');
+    }
+    cleanupOldCards(allMessages);
+  }
+
+  // 按时间顺序处理所有消息（仅最后2条渲染卡片，旧卡片清除）
+  function processMessageChain(allMessages) {
+    renderLastTwo(allMessages);
+    return Math.min(allMessages.length, 2);
+  }
+
+  // 处理最新消息：AI回复提取 B，用户消息渲染 b 并触发演化（b = B 经用户事件线性演化，b ≠ B）
   function processLatestMessage() {
     var allMessages = document.querySelectorAll('.mes');
     if (allMessages.length === 0) return;
@@ -1079,56 +1105,36 @@
     var isUser = isUserMessage(lastMsg);
 
     if (isUser) {
-      // 用户消息：用当前状态渲染卡片
-      var s = loadState();
-      if (hasContent(s)) {
-        renderCardOnMessage(lastMsg, s, false);
-        var lidx = getMessageIndex(lastMsg);
-        if (lidx >= 0) { var m = getMsgStatesMap(); m[lidx] = s; saveMsgStatesMap(m); }
-      }
+      // 用户消息：先显示上一状态（loading），随后静默总结演化出 b
+      renderLastTwo(allMessages);
+      var userHeader = lastMsg.querySelector('.wst-header');
+      if (userHeader) userHeader.classList.add('wst-loading');
+      triggerSummarize();
       return;
     }
 
-    // AI回复：先尝试HTML注释提取，再尝试纯文本兜底
-    var newState = null;
+    // AI回复：提取状态（HTML注释/S-summary优先，纯文本兜底）
     var mesText = lastMsg.querySelector('.mes_text');
-    if (mesText) {
-      newState = extractSummaryFromDOM(mesText);
-      // 兜底：从纯文本末尾提取（处理AI不输注释的情况）
-      if (!newState || !newState.time) {
-        var rawText = mesText.textContent || mesText.innerText || '';
-        newState = extractStateFromText(rawText);
-      }
-    }
+    var newState = extractStateFromMessage(mesText);
 
     if (newState && (newState.time || newState.location || newState.present)) {
-      var oldState = loadState();
-      var merged = mergeState(oldState, newState);
+      var merged = mergeState(loadState(), newState);
       merged = filterUserFromState(merged);
       saveState(merged);
+      setSnapshot('ai', merged);
       lastStateSentHash = '';
-      console.log('[WST] 🤖 状态已更新 - 时间:', merged.time, '| 区域:', merged.location);
+      console.log('[WST] 🤖 AI状态(B)已更新 - 时间:', merged.time, '| 区域:', merged.location);
     } else {
-      console.log('[WST] ⚠️ 未提取到状态，保留当前状态');
-    }
-
-    // 用当前状态渲染最后2条消息（即使状态为空，首次使用时也显示占位）
-    var currentState = loadState();
-    var total = allMessages.length;
-    var map = getMsgStatesMap();
-    for (var j = Math.max(0, total - 2); j < total; j++) {
-      var idx = getMessageIndex(allMessages[j]);
-      if (idx >= 0) {
-        renderCardOnMessage(allMessages[j], currentState, false);
-        map[idx] = currentState;
+      // 未提取到：AI快照为空时用当前状态补位，保持卡片可显示
+      var aiState = getSnapshot('ai');
+      if (!hasContent(aiState)) {
+        var cur = loadState();
+        if (hasContent(cur)) setSnapshot('ai', cur);
       }
+      console.log('[WST] ⚠️ 未提取到AI状态，保留当前状态');
     }
-    saveMsgStatesMap(map);
 
-    cleanupOldCards(allMessages);
-
-    // 后台触发静默总结更新状态
-    triggerSummarize();
+    renderLastTwo(allMessages);
   }
 
   function cleanupOldCards(allMessages) {
@@ -1143,6 +1149,25 @@
     var allMessages = document.querySelectorAll('.mes');
     console.log('[WST] scan() 发现 ' + allMessages.length + ' 条消息');
     if (allMessages.length === 0) return 0;
+
+    // 恢复：AI快照为空但最后一条AI消息含状态标签时，提取作为B（版本清理后自动重建）
+    var aiState = getSnapshot('ai');
+    if (!hasContent(aiState)) {
+      var lastAi = findLastAiMessageEl(allMessages);
+      if (lastAi) {
+        var mesText = lastAi.querySelector('.mes_text');
+        var ns = extractStateFromMessage(mesText);
+        if (ns && (ns.time || ns.location || ns.present)) {
+          var merged = mergeState(loadState(), ns);
+          merged = filterUserFromState(merged);
+          saveState(merged);
+          setSnapshot('ai', merged);
+          lastStateSentHash = '';
+          console.log('[WST] 🔄 已从最后AI消息恢复状态(B):', merged.time, merged.location);
+        }
+      }
+    }
+
     var rendered = processMessageChain(allMessages);
     console.log('[WST] 状态链处理完成，渲染了 ' + rendered + ' 条消息的卡片');
     return allMessages.length;
@@ -1171,6 +1196,9 @@
   function injectStateToChatArray(eventData) {
     if (eventData.dryRun) return;
     var state = loadState();
+    // 需求2.2：AI回复状态(B)基于用户状态(b)演化 → 优先注入最新用户快照
+    var userState = getSnapshot('user');
+    if (hasContent(userState)) state = userState;
     if (!shouldInject(state)) return;
     var firstTime = isFirstTimeState(state) && hasChatHistory();
     if (firstTime) console.log('[WST] 🆕 用户消息追加：首次回溯指令');
@@ -1220,79 +1248,184 @@
     }
   }
 
-  // ==================== 静默状态总结 ====================
+  // ==================== 静默状态总结（需求2.2：b = B 经用户事件线性演化，b ≠ B） ====================
   var summarizeLock = false;
+  var summarizeTimeout = null;
+  var SUMMARIZE_TIMEOUT_MS = 60000;
 
-  async function summarizeChatHistory() {
-    if (summarizeLock) return;
+  // 归一化生成结果（兼容字符串 / {mes} / {text} / {content} / {choices}）
+  function normalizeGenerateResult(r) {
+    if (typeof r === 'string') return r;
+    if (r && typeof r === 'object') {
+      if (r.mes) return r.mes;
+      if (r.text) return r.text;
+      if (r.content) return r.content;
+      if (r.choices && r.choices[0]) {
+        var c = r.choices[0];
+        if (c.message && c.message.content) return c.message.content;
+        if (c.text) return c.text;
+      }
+    }
+    return '';
+  }
+
+  // 状态对象 → 纯文本字段（用于总结Prompt）
+  function stateToText(state) {
+    if (!state) return '';
+    var lines = [];
+    if (state.time)       lines.push('时间：' + state.time);
+    if (state.location)   lines.push('区域：' + state.location);
+    if (state.present)    lines.push('在场角色+BUFF：' + state.present);
+    if (state.absent)     lines.push('不在场角色：' + state.absent);
+    if (state.hymen)      lines.push('处女膜状态：' + state.hymen);
+    if (state.sexCount)   lines.push('做爱次数：' + state.sexCount);
+    if (state.affection)  lines.push('当前好感度：' + state.affection);
+    if (state.appearance) lines.push('身体外貌：' + state.appearance);
+    if (state.memories && Object.keys(state.memories).length > 0) {
+      lines.push('重要记忆点：');
+      var chars = Object.keys(state.memories);
+      for (var i = 0; i < chars.length; i++) {
+        var mems = state.memories[chars[i]];
+        if (mems && mems.length > 0) lines.push('- ' + chars[i] + '：' + mems.join('|'));
+      }
+    }
+    return lines.join('\n');
+  }
+
+  // 解析总结结果并校验有效性
+  function parseSummaryResult(text) {
+    if (!text || typeof text !== 'string' || text.length < 20) return null;
+    var ns = parseSummary(text);
+    if (ns && (ns.time || ns.location || ns.present)) return ns;
+    return null;
+  }
+
+  // 构建总结Prompt：上一状态 + 最近聊天 + 演化规则（b ≠ B，线性逻辑）
+  function buildSummarizePrompt() {
+    var ctx = SillyTavern.getContext();
+    if (!ctx.chat || !Array.isArray(ctx.chat) || ctx.chat.length < 2) return null;
+
+    var msgs = ctx.chat.slice(-30);
+    var hist = '';
+    for (var i = 0; i < msgs.length; i++) {
+      var m = msgs[i];
+      var r = m.is_user ? (ctx.name1 || '用户') : (m.name || 'AI');
+      var t = (m.mes || '').trim();
+      if (t) hist += r + '：' + t + '\n';
+    }
+    if (!hist.trim()) return null;
+
+    var prevState = loadState();
+    var wb = getWorldBookData();
+    var fs = wb.favorabilitySystem || getDefaultFavorabilitySystem();
+    var un = getUserPersonaName();
+
+    var p = '你是世界状态追踪器。根据「上一状态」和「聊天记录」，线性推演出当前最新状态。' +
+      '新状态必须与上一状态不同：至少一个字段有可观察的变化（时间推进、位置移动、角色加入/离开、好感变化等），变化必须符合聊天内容的线性逻辑。\n\n' +
+      '上一状态：\n' + (stateToText(prevState) || '（空）') + '\n\n' +
+      '聊天记录：\n' + hist + '\n\n' +
+      '输出格式（每字段独占一行）：\n时间：\n区域：\n在场角色+BUFF：\n不在场角色：\n处女膜状态：\n做爱次数：\n当前好感度：\n身体外貌：\n重要记忆点：\n- 角色名：记忆1|记忆2\n\n' +
+      '规则：仅追踪女性角色，只输出状态数据不续写故事。' +
+      '好感度系统=' + fs +
+      (un ? '排除用户角色「' + un + '」。' : '') +
+      (wb.allKeys.length > 0 ? '角色仅限：' + wb.allKeys.join('、') + '。' : '') +
+      '重要记忆每人最多6条，每条不超过70字。';
+    return p;
+  }
+
+  // 用户状态演化结果落地：保存 b 快照 + 刷新最后2条卡片
+  function applyUserSnapshot(state) {
+    saveState(state);
+    setSnapshot('user', state);
+    lastStateSentHash = '';
+    console.log('[WST] ✅ 用户状态(b)已演化 - 时间:', state.time, '| 区域:', state.location);
+  }
+
+  // ES5 Promise 链实现（不依赖 async/await）
+  function summarizeChatHistory() {
+    if (summarizeLock) {
+      // 已有总结进行中：稍后重试，避免用户消息卡片停留在loading
+      setTimeout(summarizeChatHistory, 3000);
+      return;
+    }
+    var ctx = SillyTavern.getContext();
+    var p = buildSummarizePrompt();
+    if (!p) return;
     summarizeLock = true;
-    try {
-      var ctx = SillyTavern.getContext();
-      if (!ctx.chat || !Array.isArray(ctx.chat) || ctx.chat.length < 2) { summarizeLock = false; return; }
+    summarizeTimeout = setTimeout(function () {
+      summarizeLock = false;
+      summarizeTimeout = null;
+      console.warn('[WST] ⏱️ 静默总结超时，释放锁');
+    }, SUMMARIZE_TIMEOUT_MS);
 
-      var msgs = ctx.chat.slice(-30);
-      var hist = '';
-      for (var i = 0; i < msgs.length; i++) {
-        var m = msgs[i];
-        var r = m.is_user ? (ctx.name1 || '用户') : (m.name || 'AI');
-        var t = (m.mes || '').trim();
-        if (t) hist += r + '：' + t + '\n';
-      }
-      if (!hist.trim()) { summarizeLock = false; return; }
-
-      var wb = getWorldBookData();
-      var fs2 = wb.favorabilitySystem || getDefaultFavorabilitySystem();
-      var un = getUserPersonaName();
-
-      var p = '你是世界状态提取器。根据聊天记录提取当前状态，只输出结果。\n\n聊天记录：\n' + hist +
-        '\n\n输出格式：\n时间：\n区域：\n在场角色+BUFF：\n不在场角色：\n处女膜状态：\n做爱次数：\n当前好感度：\n身体外貌：\n重要记忆点：\n- 角色名：记忆1|记忆2\n\n规则：仅追踪女性角色。好感度系统=' + fs2 +
-        (un ? '排除用户角色「' + un + '」。' : '') +
-        (wb.allKeys.length > 0 ? '角色仅限：' + wb.allKeys.join('、') + '。' : '');
-
-      var resultText = '';
-      try {
-        console.log('[WST] 🤖 generateQuietPrompt 提取状态...');
-        var r1 = await ctx.generateQuietPrompt({ quietPrompt: p, skipWIAN: true });
-        if (typeof r1 === 'string') resultText = r1;
-        else if (r1 && typeof r1 === 'object') resultText = r1.mes || r1.text || r1.content || '';
-      } catch(e) { console.warn('[WST] qP失败:', e.message); }
-
-      // 检测故事续写，用generateRaw回退
-      if (!resultText || resultText.indexOf('时间') === -1) {
-        try {
-          console.log('[WST] generateRaw 回退...');
-          var r2 = await ctx.generateRaw({
-            prompt: [
-              { role: 'system', content: '你是世界状态提取器。只输出状态数据，不续写故事。' },
-              { role: 'user', content: p }
-            ]
-          });
-          if (typeof r2 === 'string') resultText = r2;
-        } catch(e2) { console.warn('[WST] gR失败:', e2.message); }
-      }
-
-      if (resultText && resultText.length > 20 && resultText.indexOf('时间') !== -1) {
-        var ns = parseSummary(resultText);
-        if (ns && (ns.time || ns.location || ns.present)) {
-          saveState(ns);
-          console.log('[WST] ✅ 状态已提取:', ns.time, ns.location);
-          lastStateSentHash = '';
-
-          var allMes = document.querySelectorAll('.mes');
-          var total = allMes.length;
-          var map = getMsgStatesMap();
-          for (var j = Math.max(0, total - 2); j < total; j++) {
-            var idx = getMessageIndex(allMes[j]);
-            if (idx >= 0) { renderCardOnMessage(allMes[j], ns); map[idx] = ns; }
-          }
-          saveMsgStatesMap(map);
-          cleanupOldCards(allMes);
+    var finish = function (resultText) {
+      summarizeLock = false;
+      if (summarizeTimeout) { clearTimeout(summarizeTimeout); summarizeTimeout = null; }
+      var ns = parseSummaryResult(resultText);
+      if (ns) {
+        // 核心约束：b 必须 ≠ B
+        var aiState = getSnapshot('ai');
+        if (hasContent(aiState) && JSON.stringify(ns) === JSON.stringify(aiState)) {
+          console.warn('[WST] ⚠️ 演化结果与AI状态(B)相同，未产生可观察变化');
         }
+        applyUserSnapshot(ns);
       } else if (resultText) {
-        console.log('[WST] 总结返回非状态文本 (' + resultText.length + ' chars)');
+        console.warn('[WST] 总结返回非状态文本 (' + resultText.length + ' chars)');
+      } else {
+        console.warn('[WST] 总结返回为空');
       }
-    } catch(e) { console.warn('[WST] 总结失败:', e.message); }
-    finally { summarizeLock = false; }
+      // 无论如何刷新卡片，清除loading状态
+      var allMes = document.querySelectorAll('.mes');
+      if (allMes.length > 0) renderLastTwo(allMes);
+    };
+
+    var tryRaw = function () {
+      try {
+        console.log('[WST] generateRaw 回退...');
+        var raw = ctx.generateRaw({
+          prompt: [
+            { role: 'system', content: '你是世界状态提取器。只输出状态数据，不续写故事。' },
+            { role: 'user', content: p }
+          ]
+        });
+        if (raw && typeof raw.then === 'function') {
+          raw.then(function (r) {
+            finish(normalizeGenerateResult(r));
+          })['catch'](function (e) {
+            console.warn('[WST] gR失败:', e && e.message);
+            finish('');
+          });
+        } else {
+          finish(normalizeGenerateResult(raw));
+        }
+      } catch (e2) {
+        console.warn('[WST] gR失败:', e2 && e2.message);
+        finish('');
+      }
+    };
+
+    try {
+      console.log('[WST] 🤖 generateQuietPrompt 提取状态...');
+      var qp = ctx.generateQuietPrompt({ quietPrompt: p, skipWIAN: true });
+      if (qp && typeof qp.then === 'function') {
+        qp.then(function (r) {
+          var t = normalizeGenerateResult(r);
+          if (t && t.indexOf('时间') !== -1) finish(t);
+          else tryRaw();
+        })['catch'](function (e) {
+          console.warn('[WST] qP失败:', e && e.message);
+          tryRaw();
+        });
+      } else {
+        // 同步返回（极少数兼容场景）
+        var t2 = normalizeGenerateResult(qp);
+        if (t2 && t2.indexOf('时间') !== -1) finish(t2);
+        else tryRaw();
+      }
+    } catch (e) {
+      console.warn('[WST] qP失败:', e && e.message);
+      tryRaw();
+    }
   }
 
   function triggerSummarize() {
@@ -1352,12 +1485,11 @@
       saveState(state);
       lastStateSentHash = '';
 
-      // 清除逐消息快照，让全量重算以反映编辑
-      try {
-        var meta = getChatMetadata();
-        delete meta.wst_msg_states;
-        triggerChatSave();
-      } catch(e) {}
+      // 同步更新对应类型快照（AI卡片 → B，用户卡片 → b）
+      var cardHeader = line.closest('.wst-header');
+      var kind = cardHeader ? cardHeader.getAttribute('data-wst-kind') : null;
+      if (kind === 'user') setSnapshot('user', state);
+      else setSnapshot('ai', state);
 
       // 重新扫描所有消息，用编辑后的状态刷新卡片
       scan();
@@ -1382,8 +1514,8 @@
     } catch(e) {}
   }
 
-  jQuery(async function () {
-    console.log('[WST] 🚀 世界状态追踪器 v3.7.0 初始化...');
+  jQuery(function () {
+    console.log('[WST] 🚀 世界状态追踪器 v3.8.0 初始化...');
     currentChatId = getChatId();
     cleanLegacyWSTTags();
 
@@ -1419,13 +1551,28 @@
         console.log('[WST] MESSAGE_SENT 注入已注册（回退）');
       }
 
-      es.on(et.CHARACTER_MESSAGE_RENDERED, function () {
+      // 即时提取：AI消息生成/渲染后尝试提取状态（GENERATION_ENDED + CHARACTER_MESSAGE_RENDERED 双触发，提取幂等）
+      var onMessageRendered = function () {
         clearTimeout(timer);
         lastStateSentHash = '';
         timer = setTimeout(function () {
           processLatestMessage();
         }, DEBOUNCE_MS);
-      });
+      };
+
+      es.on(et.CHARACTER_MESSAGE_RENDERED, onMessageRendered);
+      if (et.GENERATION_ENDED) {
+        es.on(et.GENERATION_ENDED, onMessageRendered);
+        console.log('[WST] GENERATION_ENDED 已注册');
+      }
+      if (et.USER_MESSAGE_RENDERED) {
+        es.on(et.USER_MESSAGE_RENDERED, onMessageRendered);
+        console.log('[WST] USER_MESSAGE_RENDERED 已注册');
+      }
+      if (et.MESSAGE_RENDERED) {
+        es.on(et.MESSAGE_RENDERED, onMessageRendered);
+        console.log('[WST] MESSAGE_RENDERED 已注册');
+      }
 
       es.on(et.CHAT_CHANGED, function () {
         currentChatId = getChatId();

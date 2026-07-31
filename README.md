@@ -9,7 +9,7 @@
 - ✏️ **手动编辑** — 点击任意字段直接修改，立即生效
 - 🔄 **静默总结** — 用户发消息后触发总结获取演化状态；AI 回复后走 S-summary 提取
 - 💾 **chatMetadata 持久化** — 数据跟随聊天对象（对标 st-memory-enhancement），切换聊天不污染
-- 🔗 **状态继承链** — 用户消息状态在 AI 状态基础上经故事演化；AI 消息完全继承用户消息状态
+- 🔗 **状态继承链（B→b）** — AI 消息卡片显示 B（标签提取）；用户消息卡片显示 b = B 经用户事件线性演化（b ≠ B）
 - 📖 **世界书集成** — 自动读取世界书角色列表和好感度系统
 - 🧠 **智能记忆管理** — 重要记忆自动评分排序，每人最多 6 条，每条 ≤70 字
 - 🔇 **隐藏 S-summary** — 从消息显示中移除原始标签，保持界面整洁
@@ -30,27 +30,29 @@
 
 ---
 
-## 🧠 状态继承逻辑（v3.3.0+）
+## 🧠 状态继承逻辑（v3.8.0+）
 
 ### 核心概念
 
 ```
-#102 AI回复 → 状态(A)    ← AI输出的<S-summary>定义初始状态
+#102 AI回复 → 状态(A)    ← AI输出的 <!-- WST --> / <S-summary> 定义初始状态
 #103 用户消息 → 状态(a)   ← 在A基础上经用户故事演化（静默总结）
-#104 AI回复 → 状态(B)    ← 完全继承a（AI只叙述不改变世界状态）
+#104 AI回复 → 状态(B)    ← 在a基础上经AI回复事件演化（标签提取）
 #105 用户消息 → 状态(b)   ← 在B基础上经用户故事演化（静默总结）
 ...依此类推
 ```
 
 | 继承关系 | 说明 |
 |---------|------|
-| **a 继承 A** | 用户消息包含故事推进 → 触发静默总结 → 状态在 A 基础上演化，a 与 A **略有不同** |
-| **B = a** | AI 回复只是叙事，不改变世界状态 → B **完全等于** a（除非 AI 输出了 `<S-summary>` 更新） |
-| **b 继承 B** | 同 a 继承 A，用户下一轮输入推动故事 |
+| **a 继承 A** | 用户消息包含故事推进 → 触发静默总结 → 状态在 A 基础上演化，a 与 A **不同** |
+| **B 继承 a** | AI 回复叙事后输出 `<!-- WST -->` 标签 → 提取合并为 B |
+| **b 继承 B（核心）** | 用户下一轮输入推动故事 → 静默总结将 B 线性演化出 b，**b ≠ B**（时间推进/位置移动/角色加入离开/好感变化等） |
+
+> ⚠️ **核心约束（REQUIREMENTS.md 2.2）**：相邻两个卡片（B 和 b）的内容不能相同；每个新卡片必须在前一个卡片基础上有可观察的变化，且变化必须符合聊天内容的线性逻辑。
 
 ### 卡片显示规则
 
-仅最新 **2 条消息**（最新 AI 回复 + 最新用户消息）显示状态卡片，历史消息的卡片自动清除。
+仅最新 **2 条消息**（最新 AI 回复 + 最新用户消息）显示状态卡片，历史消息的卡片自动清除。每聊天只保存 **2 个状态快照**（最新 AI 的 B + 最新用户的 b），新状态产生时旧状态被顶替（替换而非追加），切换聊天互不污染。
 
 ```
 ...旧消息...
@@ -64,25 +66,25 @@
 
 ## 🧠 工作原理
 
-### 数据流（v3.3.0+）
+### 数据流（v3.8.0+）
 
 ```
 ┌────────────────────────────────────────────────┐
 │  用户发消息                                       │
 │  ├─ CHAT_COMPLETION_PROMPT_READY 注入状态到Chat数组 │
-│  └─ CHARACTER_MESSAGE_RENDERED → 触发总结演化      │
+│  └─ USER_MESSAGE_RENDERED → 渲染b卡片+静默总结演化  │
 └──────────────────┬─────────────────────────────┘
                    ▼
 ┌────────────────────────────────────────────────┐
 │  AI 回复（含 <S-summary>）                        │
-│  ├─ CHARACTER_MESSAGE_RENDERED 触发               │
+│  ├─ GENERATION_ENDED / CHARACTER_MESSAGE_RENDERED  │
 │  ├─ extractSummaryFromDOM() 解析 S-summary       │
-│  └─ mergeState() 合并状态                        │
+│  └─ mergeState() 合并为 B 快照                    │
 └──────────────────┬─────────────────────────────┘
                    ▼
 ┌────────────────────────────────────────────────┐
 │  保存到 chatMetadata.wst_state（跟随聊天对象）       │
-│  + 逐消息快照 chatMetadata.wst_msg_states          │
+│  + 双快照 wst_ai_state(B) + wst_user_state(b)      │
 └──────────────────┬─────────────────────────────┘
                    ▼
 ┌────────────────────────────────────────────────┐
@@ -100,7 +102,8 @@
 | 事件 | 行为 |
 |------|------|
 | `CHAT_COMPLETION_PROMPT_READY` | 注入世界状态到 Chat 数组（对标 st-memory-enhancement） |
-| `CHARACTER_MESSAGE_RENDERED` | 用户消息 → 触发静默总结演化状态；AI 消息 → 提取 `<S-summary>` |
+| `CHARACTER_MESSAGE_RENDERED` / `GENERATION_ENDED` | AI 消息 → 提取 `<!-- WST -->` / `<S-summary>` 作为 B |
+| `USER_MESSAGE_RENDERED` / `MESSAGE_RENDERED` | 用户消息 → 渲染 b 卡片并触发静默总结（b = B 经用户事件演化，b ≠ B） |
 | `CHAT_CHANGED` | 切换聊天 ID，重新扫描，无状态时自动注入首次回溯指令 |
 | `MESSAGE_UPDATED` | 消息编辑后重新扫描 |
 | MutationObserver（兜底）| DOM 变化时扫描（事件系统不可用时） |
@@ -151,15 +154,18 @@
 
 ---
 
-## 💾 数据存储（v3.3.4+ 对标 st-memory-enhancement）
+## 💾 数据存储（v3.8.0+ 对标 st-memory-enhancement）
 
 ### chatMetadata（主要存储）
 
 ```
-ctx.chatMetadata.wst_state          ← 当前全局状态
-ctx.chatMetadata.wst_msg_states     ← 逐消息状态快照 {"0": stateA, "1": stateA, ...}
-ctx.chatMetadata.wst_version        ← 版本号（更新后自动清理旧数据）
+ctx.chatMetadata.wst_state          ← 当前状态（= 最新快照，用于 Prompt 注入）
+ctx.chatMetadata.wst_ai_state       ← 最新AI消息快照（B）
+ctx.chatMetadata.wst_user_state     ← 最新用户消息快照（b）
+ctx.chatMetadata.wst_version        ← 版本号（变更时自动清理全部旧数据并重新记录）
 ```
+
+**双快照模型（v3.8.0+）**：每聊天仅保存 2 个快照（最新 AI 的 B + 最新用户的 b），新状态产生时旧状态被顶替（替换而非追加）。v3.8.0 起移除逐消息快照 `wst_msg_states`，旧数据在版本变更时自动清除。
 
 **优势**：数据跟随聊天对象，ST 切换聊天时自动加载/保存，**不存在跨聊天 key 碰撞污染问题**。
 
@@ -263,11 +269,11 @@ ctx.chatMetadata.wst_version        ← 版本号（更新后自动清理旧数�
 |---------|------|
 | 入口方式 | SillyTavern 扩展系统（manifest.json → index.js + style.css） |
 | 事件系统 | `SillyTavern.getContext().eventSource` ST 内部事件总线 |
-| 状态存储 | `chatMetadata`（主）+ `localStorage`（迁移兼容） |
+| 状态存储 | `chatMetadata` 双快照（`wst_ai_state` B + `wst_user_state` b）+ `localStorage`（迁移兼容） |
 | DOM 操作 | 原生 JS（兼容旧浏览器） |
 | JS 语法 | ES5 兼容（var、function、无箭头函数、无 let/const） |
 | Prompt 注入 | `CHAT_COMPLETION_PROMPT_READY` + 直接操作 chat 数组（对标 st-memory-enhancement） |
-| 静默总结 | `generateQuietPrompt()` → 直接 API 调用（回退，对标 st-memory-enhancement） |
+| 静默总结 | `generateQuietPrompt()` → `generateRaw()` 消息数组回退（对标 narrative-agent），60s 超时锁 |
 
 ### 兼容性
 
@@ -282,6 +288,14 @@ ctx.chatMetadata.wst_version        ← 版本号（更新后自动清理旧数�
 ---
 
 ## 📝 版本历史
+
+### v3.8.0 (2026-07-31) — 双快照模型 + b≠B 演化（对标 REQUIREMENTS.md）
+
+- 💾 **数据隔离改为 2 快照**：`wst_ai_state`（B）+ `wst_user_state`（b），移除逐消息 `wst_msg_states`，新状态顶替旧状态
+- 🔗 **b ≠ B 核心约束**：用户消息卡片显示 b = B 经用户事件线性演化（静默总结强制至少一个字段变化）
+- 🧹 **版本更新清理**：版本号变更时自动清理全部旧数据，清理后重新记录
+- ⚡ **事件增强**：新增 `GENERATION_ENDED` / `USER_MESSAGE_RENDERED` / `MESSAGE_RENDERED` 注册，AI 标签提取幂等
+- ♻️ **ES5 化**：`summarizeChatHistory` 改为 Promise 链（移除 async/await），60s 超时锁防挂死
 
 ### v3.3.x (2026-07-31) — 架构对标 st-memory-enhancement
 
@@ -344,7 +358,7 @@ world-state-tracker/
 | 跨聊天状态污染 | v3.3.4+ 已改用 chatMetadata，确认版本号；首次加载会自动清理 |
 | 状态不注入 Prompt | 检查控制台 `Chat数组注入` 日志；如用回退模式看 `ExtensionPrompt注入` |
 | 静默总结返回故事续写 | v3.3.0+ 已加直接 API 调用回退；检查控制台确认回退是否触发 |
-| 重载后卡片消失 | v3.3.3+ 有逐消息快照；检查 `wst_msg_states` 是否正常保存 |
+| 重载后卡片消失 | v3.8.0+ 双快照持久化；检查 `wst_ai_state` / `wst_user_state` 是否正常保存 |
 | 用户角色未被排除 | 确认酒馆中 `name1` 或 persona 名称设置正确 |
 | 记忆编辑后为空 | 编辑时格式需以 `- ` 开头，如 `- 琴：记忆1\|记忆2` |
 | 不在场角色中出现泛称 | `isGenericEntry()` 会自动剔除；如仍出现说明模型输出过于离谱 |
