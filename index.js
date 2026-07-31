@@ -201,7 +201,7 @@
 
   // ==================== 状态持久化（对标st-memory-enhancement：存在chatMetadata中） ====================
   // 数据跟随聊天对象，切换聊天时ST自动加载/保存，天然不污染
-  var WST_VERSION = '3.4.0'; // 版本号：更新后首次使用自动清理旧数据
+  var WST_VERSION = '3.5.1'; // 版本号：更新后首次使用自动清理旧数据
 
   function getChatMetadata() {
     try {
@@ -1114,7 +1114,6 @@
           } else {
             removeCardFromMessage(lastMsg);
           }
-          triggerSummarize();
         }
       }
     }
@@ -1168,206 +1167,190 @@
     }
   }
 
-  // ==================== 静默状态总结（直接API调用） ====================
+  // ==================== 独立 LLM 状态提取（generateRaw + JSON Schema） ====================
 
   var summarizeLock = false;
 
-  // 读取ST的API配置
-  function getAPIConfig() {
-    try {
-      var ctx = SillyTavern.getContext();
-      // ST 1.12+ 的API配置路径
-      if (ctx.onlineStatus) {
-        return {
-          url: ctx.onlineStatus.apiUrl || ctx.onlineStatus.custom_url || '',
-          key: ctx.onlineStatus.apiKey || ctx.onlineStatus.custom_api_key || '',
-          model: ctx.onlineStatus.model || ctx.onlineStatus.custom_model || ''
-        };
+  // 状态字段的 JSON Schema（强制结构化输出）
+  function getStateJsonSchema() {
+    return {
+      name: 'WorldState',
+      description: '当前角色扮演世界状态',
+      strict: true,
+      value: {
+        '$schema': 'http://json-schema.org/draft-04/schema#',
+        type: 'object',
+        properties: {
+          time: { type: 'string', description: '当前剧情时间，格式：第X天 HH:MM' },
+          location: { type: 'string', description: '主角所在位置' },
+          present: { type: 'string', description: '在场女性角色及BUFF' },
+          absent: { type: 'string', description: '不在场女性角色，格式：角色名-在做什么' },
+          hymen: { type: 'string', description: '女性角色处女膜状态' },
+          sexCount: { type: 'string', description: '女性角色做爱次数' },
+          affection: { type: 'string', description: '女性角色当前好感度' },
+          appearance: { type: 'string', description: '女性角色当前身体外貌' },
+          memories: { type: 'string', description: '重要记忆点，格式：角色名：记忆1|记忆2，每行一个角色' }
+        },
+        required: ['time', 'location', 'present', 'absent', 'hymen', 'sexCount', 'affection', 'appearance', 'memories']
       }
-      // 尝试其他路径
-      var powerUser = ctx.power_user;
-      if (powerUser) {
-        return {
-          url: powerUser.custom_url || '',
-          key: powerUser.api_key || powerUser.custom_api_key || '',
-          model: powerUser.custom_model || ''
-        };
-      }
-      return null;
-    } catch(e) {
-      return null;
-    }
+    };
   }
 
   async function summarizeChatHistory() {
-    if (summarizeLock) { console.log('[WST] 已有总结任务进行中，跳过'); return; }
+    if (summarizeLock) { console.log('[WST] 总结进行中，跳过'); return; }
     summarizeLock = true;
 
     try {
       var ctx = SillyTavern.getContext();
       if (!ctx.chat || !Array.isArray(ctx.chat) || ctx.chat.length < 1) {
-        console.log('[WST] 聊天记录不足，跳过总结');
-        summarizeLock = false;
-        return;
+        summarizeLock = false; return;
       }
 
-      // 构建聊天历史文本（最后30条）
+      // 取最近30条聊天记录
       var recentMessages = ctx.chat.slice(-30);
       var historyText = '';
       for (var i = 0; i < recentMessages.length; i++) {
         var m = recentMessages[i];
         var role = m.is_user ? (ctx.name1 || '用户') : (m.name || 'AI');
-        var text = (m.mes || '').replace(/<WST_世界状态>[\s\S]*?<\/WST_世界状态>/g, '').replace(/<S-summary>[\s\S]*?<\/S-summary>/gi, '').trim();
+        var text = (m.mes || '').replace(/<WST_世界状态>[\s\S]*?<\/WST_世界状态>/g, '').replace(/<!--\s*WST[\s\S]*?-->/gi, '').trim();
         if (text) historyText += role + '：' + text + '\n';
       }
-
-      if (!historyText.trim()) { console.log('[WST] 无有效聊天文本'); summarizeLock = false; return; }
+      if (!historyText.trim()) { summarizeLock = false; return; }
 
       var wbData = getWorldBookData();
       var favorSys = wbData.favorabilitySystem || getDefaultFavorabilitySystem();
       var userName = getUserPersonaName();
-      var userExclude = userName ? '排除用户角色「' + userName + '」。' : '';
-      var wbConstraint = wbData.allKeys.length > 0 ? '仅限世界书角色：' + wbData.allKeys.join('、') + '。' : '';
+      var userExclude = userName ? '用户扮演的角色「' + userName + '」不出现在任何字段中。' : '';
+      var wbConstraint = wbData.allKeys.length > 0 ? '在场/不在场角色仅限世界书角色：' + wbData.allKeys.join('、') + '。' : '';
 
-      // 构建总结prompt
-      var systemPrompt = '你是一个数据提取工具。你的唯一任务是从聊天记录中提取世界状态。你必须直接输出<S-summary>格式的状态数据。不要续写故事、不要解释、不要添加任何故事内容。';
+      var systemPrompt = '你是一个世界状态数据提取器。根据聊天记录提取当前世界状态，严格按照JSON Schema输出。禁止续写故事。';
       var userPrompt = [
-        '========== 聊天记录（仅用于提取状态，不要续写！）==========',
+        '【聊天记录】',
         historyText,
-        '========== 结束 ==========',
+        '【结束】',
         '',
-        '规则：',
-        '- 仅追踪女性角色。' + userExclude,
-        '- ' + wbConstraint,
-        '- 在场角色 = 最近消息所在场景中出现的女性角色。此字段只写角色名和BUFF，不写角色去做什么。',
-        '- 不在场角色 = 之前出现过但当前不在场景的女性角色。格式：角色名-在做什么。禁止泛称。此字段和在场角色必须分开写，不能写在同一行。',
-        '- 好感度系统：' + favorSys,
-        '- 重要记忆：每人≤6条，只记改变人生的事件，每条≤70字。',
-        '',
-        '输出格式（必须严格按照此格式，不要省略任何字段）：',
-        '<S-summary>',
-        '时间：',
-        '区域：',
-        '在场角色+BUFF：',
-        '不在场角色：',
-        '处女膜状态：',
-        '做爱次数：',
-        '当前好感度：',
-        '身体外貌：',
-        '重要记忆点：',
-        '- 角色名：记忆1|记忆2',
-        '</S-summary>',
-        '',
-        '现在输出<S-summary>：'
+        '【规则】',
+        '1. 仅追踪女性角色（排除男性）。' + userExclude,
+        '2. ' + wbConstraint,
+        '3. 在场角色 = 最近消息场景中出现的所有女性角色及BUFF。',
+        '4. 不在场角色 = 之前出现过但当前不在场景的女角色，格式「名字-在做什么」。禁止泛称。',
+        '5. 好感度系统：' + favorSys,
+        '6. 重要记忆每人≤6条，只记录改变人生的重大事件，每条≤70字。格式：角色名：记忆1|记忆2',
+        '7. 时间格式：第X天 HH:MM'
       ].join('\n');
 
-      // 先用 generateQuietPrompt 试一次（走ST内部路由，更可靠）
       var resultText = '';
+
+      // 方式1：generateRaw + JSON Schema（文档推荐，无聊天上下文）
       try {
-        console.log('[WST] 🤖 尝试 generateQuietPrompt (历史长度:' + historyText.length + ' chars)...');
-        var result = await ctx.generateQuietPrompt({
-          quietPrompt: systemPrompt + '\n\n' + userPrompt,
-          skipWIAN: true
+        console.log('[WST] 🤖 generateRaw + JSON Schema 提取状态...');
+        var rawResult = await ctx.generateRaw({
+          systemPrompt: systemPrompt,
+          prompt: userPrompt,
+          jsonSchema: getStateJsonSchema()
         });
-        if (typeof result === 'string') resultText = result;
-        else if (result && typeof result === 'object') {
-          resultText = result.mes || result.text || result.content || '';
-          if (!resultText && Array.isArray(result) && result.length > 0) {
-            resultText = result[result.length - 1].mes || result[result.length - 1].content || '';
-          }
-          if (!resultText && result.message) resultText = result.message;
+        if (typeof rawResult === 'string') resultText = rawResult;
+        else if (rawResult && typeof rawResult === 'object') {
+          resultText = rawResult.mes || rawResult.text || rawResult.content || '';
+          if (!resultText) resultText = JSON.stringify(rawResult);
         }
-      } catch (e) {
-        console.warn('[WST] generateQuietPrompt失败:', e.message);
+        console.log('[WST] generateRaw 返回 (' + resultText.length + ' chars)');
+      } catch(e) {
+        console.warn('[WST] generateRaw 失败:', e.message);
       }
 
-      // 检测是否为故事续写
-      var looksLikeStory = resultText.indexOf('时间') === -1 && resultText.indexOf('区域') === -1 && resultText.indexOf('在场') === -1;
-      
-      if (looksLikeStory || !resultText || resultText.length < 10) {
-        // generateQuietPrompt失效 → 尝试直接API调用（对标st-memory-enhancement）
-        console.log('[WST] ⚠️ generateQuietPrompt返回故事续写或无数据，尝试直接API调用...');
-        var apiConfig = getAPIConfig();
-        if (apiConfig && apiConfig.url && apiConfig.key) {
-          try {
-            var apiUrl = apiConfig.url.replace(/\/+$/, '') + '/v1/chat/completions';
-            console.log('[WST] 直接API调用: ' + apiUrl + ' model=' + apiConfig.model);
-            var apiResponse = await fetch(apiUrl, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': 'Bearer ' + apiConfig.key
-              },
-              body: JSON.stringify({
-                model: apiConfig.model,
-                messages: [
-                  { role: 'system', content: systemPrompt },
-                  { role: 'user', content: userPrompt }
-                ],
-                temperature: 0.3,
-                max_tokens: 2000
-              }),
-              signal: AbortSignal.timeout(60000)
-            });
-            if (apiResponse.ok) {
-              var apiData = await apiResponse.json();
-              resultText = apiData.choices && apiData.choices[0] && apiData.choices[0].message
-                ? apiData.choices[0].message.content : '';
-              console.log('[WST] 直接API调用成功 (' + resultText.length + ' chars)');
-            } else {
-              console.warn('[WST] 直接API调用失败: HTTP ' + apiResponse.status);
+      // 方式2 回退：generateQuietPrompt + JSON Schema
+      if (!resultText || resultText.length < 10) {
+        try {
+          console.log('[WST] 回退到 generateQuietPrompt + JSON Schema...');
+          var qResult = await ctx.generateQuietPrompt({
+            quietPrompt: userPrompt,
+            skipWIAN: true,
+            jsonSchema: getStateJsonSchema()
+          });
+          if (typeof qResult === 'string') resultText = qResult;
+          else if (qResult && typeof qResult === 'object') {
+            resultText = qResult.mes || qResult.text || qResult.content || '';
+            if (!resultText && Array.isArray(qResult) && qResult.length > 0) {
+              resultText = qResult[qResult.length - 1].mes || qResult[qResult.length - 1].content || '';
             }
-          } catch (e2) {
-            console.warn('[WST] 直接API调用异常:', e2.message);
           }
-        } else {
-          console.log('[WST] ⚠️ 无法读取API配置，跳过直接API调用');
+          console.log('[WST] generateQuietPrompt 返回 (' + (resultText || '').length + ' chars)');
+        } catch(e2) {
+          console.warn('[WST] generateQuietPrompt 失败:', e2.message);
         }
-      } else {
-        console.log('[WST] generateQuietPrompt返回有效数据 (' + resultText.length + ' chars)');
-      }
-
-      console.log('[WST] 总结原始返回 (' + resultText.length + ' chars):', resultText.substring(0, 300));
-
-      // 再次检测
-      looksLikeStory = resultText.indexOf('时间') === -1 && resultText.indexOf('区域') === -1 && resultText.indexOf('在场') === -1;
-      if (looksLikeStory && resultText.length > 5) {
-        console.log('[WST] ⚠️ 最终仍为故事续写，跳过');
-        summarizeLock = false;
-        return;
       }
 
       if (resultText && resultText.length > 10) {
-        var newState = parseSummary(resultText);
-        if (newState && (newState.time || newState.location || newState.present || newState.absent)) {
-          var oldState = loadState();
-          var merged = mergeState(oldState, newState);
-          merged = filterUserFromState(merged);
-          saveState(merged);
-          console.log('[WST] ✅ 状态已更新 - 时间:', merged.time, '| 区域:', merged.location, '| 在场:', merged.present, '| 不在场:', merged.absent);
+        // 尝试解析JSON
+        var parsedState = null;
+        try {
+          // 从返回文本中提取JSON对象
+          var jsonMatch = resultText.match(/\{[\s\S]*\}/);
+          if (jsonMatch) {
+            parsedState = JSON.parse(jsonMatch[0]);
+          } else {
+            parsedState = JSON.parse(resultText);
+          }
+        } catch(jsonErr) {
+          // JSON解析失败，尝试用文本parseSummary
+          console.log('[WST] JSON解析失败，尝试文本解析');
+          parsedState = parseSummary(resultText);
+        }
 
-          // 重新扫描所有消息，用新状态渲染卡片
-          scan();
+        if (parsedState && (parsedState.time || parsedState.location || parsedState.present)) {
+          // JSON Schema 可能返回不同格式的字段名，标准化
+          var newState = createEmptyState();
+          newState.time = parsedState.time || '';
+          newState.location = parsedState.location || '';
+          newState.present = parsedState.present || '';
+          newState.absent = parsedState.absent || '';
+          newState.hymen = parsedState.hymen || '';
+          newState.sexCount = parsedState.sexCount || '';
+          newState.affection = parsedState.affection || '';
+          newState.appearance = parsedState.appearance || '';
+          // memories 可能是字符串或对象
+          if (typeof parsedState.memories === 'string' && parsedState.memories) {
+            var memParsed = parseSummary('重要记忆点：\n' + parsedState.memories);
+            newState.memories = memParsed.memories;
+          } else if (parsedState.memories && typeof parsedState.memories === 'object') {
+            newState.memories = parsedState.memories;
+          }
+          newState = filterUserFromState(newState);
+          saveState(newState);
+          console.log('[WST] ✅ JSON Schema提取成功 - 时间:', newState.time, '| 区域:', newState.location);
           lastStateSentHash = '';
+
+          // 渲染最后2条消息
+          var allMes = document.querySelectorAll('.mes');
+          var total = allMes.length;
+          var map = getMsgStatesMap();
+          for (var j = Math.max(0, total - 2); j < total; j++) {
+            var idx = getMessageIndex(allMes[j]);
+            if (idx >= 0) {
+              renderCardOnMessage(allMes[j], newState, false);
+              map[idx] = newState;
+            }
+          }
+          saveMsgStatesMap(map);
+          cleanupOldCards(allMes);
         } else {
-          console.log('[WST] ⚠️ 解析后状态仍为空。解析结果:', JSON.stringify(newState).substring(0, 200));
+          console.log('[WST] ⚠️ 提取的状态为空');
         }
       } else {
-        console.log('[WST] ⚠️ 总结返回内容过短或为空');
+        console.log('[WST] ⚠️ 提取返回内容过短');
       }
     } catch (e) {
-      console.warn('[WST] 静默总结失败:', e.message, e.stack);
+      console.warn('[WST] 状态提取失败:', e.message);
     } finally {
       summarizeLock = false;
     }
   }
 
-  // 每次AI回复后触发静默总结
   function triggerSummarize() {
     var ctx;
     try { ctx = SillyTavern.getContext(); } catch(e) { return; }
     if (!ctx.chat || !Array.isArray(ctx.chat) || ctx.chat.length < 1) return;
-    // 总是触发，让generateQuietPrompt决定是否需要更新
     summarizeChatHistory();
   }
 
@@ -1500,7 +1483,7 @@
   }
 
   jQuery(async function () {
-    console.log('[WST] 🚀 世界状态追踪器 v3.2.1 初始化...');
+    console.log('[WST] 🚀 世界状态追踪器 v3.5.1 初始化...');
     currentChatId = getChatId();
     cleanLegacyWSTTags();
 
@@ -1520,6 +1503,7 @@
       var es = ctx.eventSource;
       var et = ctx.event_types;
 
+      // 即时提取：AI消息渲染后尝试提取HTML注释
       es.on(et.CHARACTER_MESSAGE_RENDERED, function () {
         clearTimeout(timer);
         lastStateSentHash = '';
@@ -1527,6 +1511,17 @@
           processLatestMessage();
         }, DEBOUNCE_MS);
       });
+
+      // 异步提取：生成完成后用generateRaw+JSON Schema提取状态（可靠回退）
+      if (et.GENERATION_ENDED) {
+        es.on(et.GENERATION_ENDED, function () {
+          // 延迟一下确保DOM完全渲染
+          setTimeout(function() {
+            triggerSummarize();
+          }, 500);
+        });
+        console.log('[WST] 使用 GENERATION_ENDED 事件触发异步提取');
+      }
 
       // 对标st-memory-enhancement：用CHAT_COMPLETION_PROMPT_READY注入（直接操作chat数组）
       if (et.CHAT_COMPLETION_PROMPT_READY) {
