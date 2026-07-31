@@ -813,11 +813,16 @@
 
   // ==================== 卡片渲染 ====================
   function buildCardHTML(state) {
+    var isEmpty = !hasContent(state);
     var valueHTML = [];
+    if (isEmpty) {
+      valueHTML.push('<div class="wst-body__line wst-placeholder" data-wst-key="time" title="点击编辑初始状态">点击任意行编辑初始状态</div>');
+    }
     for (var i = 0; i < FIELDS.length; i++) {
       var f = FIELDS[i];
       var key = f.key;
       var value = '';
+      if (isEmpty) { valueHTML.push(''); continue; }
 
       if (key === 'memories') {
         if (state.memories && Object.keys(state.memories).length > 0) {
