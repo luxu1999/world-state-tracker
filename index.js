@@ -242,6 +242,32 @@
     } catch (e) { console.warn('[WST] 保存状态失败:', e); }
   }
 
+  // ==================== 逐消息状态快照（防止重载后卡片全显示最新状态） ====================
+  // 存储格式：wst_msg_<chatId> = { "0": stateObj, "1": stateObj, ... }
+  var MSG_STATE_KEY_PREFIX = 'wst_msg_';
+
+  function getMsgStatesMap() {
+    try {
+      var raw = localStorage.getItem(MSG_STATE_KEY_PREFIX + getChatId());
+      return raw ? JSON.parse(raw) : {};
+    } catch(e) { return {}; }
+  }
+
+  function saveMsgStatesMap(map) {
+    try {
+      localStorage.setItem(MSG_STATE_KEY_PREFIX + getChatId(), JSON.stringify(map));
+    } catch(e) { console.warn('[WST] 保存消息状态快照失败:', e); }
+  }
+
+  function getMessageIndex(msgEl) {
+    var mesid = msgEl.getAttribute('mesid');
+    if (mesid !== null && mesid !== undefined) {
+      var idx = parseInt(mesid, 10);
+      if (!isNaN(idx)) return idx;
+    }
+    return -1;
+  }
+
   // 过滤掉用户扮演角色
   function filterUserFromState(state) {
     var userName = getUserPersonaName();
@@ -867,55 +893,83 @@
     }
   }
 
-  // 按时间顺序处理所有消息，维护状态链
+  // 按时间顺序处理所有消息，维护状态链（支持页面重载后恢复）
   function processMessageChain(allMessages) {
-    var runningState = loadState(); // 从持久化存储加载基线
+    var runningState = loadState(); // 从持久化存储加载最新基线
+    var msgStatesMap = getMsgStatesMap(); // 逐消息快照
     var updatedGlobal = false;
+    var updatedMsgs = false;
     var rendered = 0;
 
     for (var i = 0; i < allMessages.length; i++) {
       var msg = allMessages[i];
+      var msgIdx = getMessageIndex(msg);
+      if (msgIdx < 0) continue;
+
       if (msg.classList.contains('system_mes')) continue;
+
+      // 优先从快照恢复（重载后S-summary已从DOM中隐藏，无法重新提取）
+      var storedState = msgStatesMap[msgIdx];
+      if (storedState && hasContent(storedState)) {
+        renderCardOnMessage(msg, storedState);
+        runningState = storedState;
+        rendered++;
+        continue;
+      }
 
       var mesText = msg.querySelector('.mes_text');
       if (!mesText) continue;
 
       var isUser = isUserMessage(msg);
-      var newState = null;
 
       if (!isUser) {
-        // AI消息：尝试提取S-summary
-        newState = extractSummaryFromDOM(mesText);
+        // AI消息：尝试提取S-summary（仅在首次扫描时能找到）
+        var newState = extractSummaryFromDOM(mesText);
         if (newState) {
-          // 合并到运行状态
           runningState = mergeState(runningState, newState);
           runningState = filterUserFromState(runningState);
           saveState(runningState);
           updatedGlobal = true;
-          console.log('[WST] 消息#' + i + ' 提取到S-summary，状态已更新');
         }
       }
-      // 用户消息：保持当前runningState不变
+      // 用户消息：保持runningState不变
 
-      // 渲染卡片（有内容才渲染）
+      // 渲染卡片并保存快照
       if (hasContent(runningState)) {
         renderCardOnMessage(msg, runningState);
+        msgStatesMap[msgIdx] = runningState;
+        updatedMsgs = true;
         rendered++;
       }
     }
 
-    // 如果本次扫描有更新，清除hash让下次注入强制刷新
+    // 持久化快照
+    if (updatedMsgs) saveMsgStatesMap(msgStatesMap);
     if (updatedGlobal) lastStateSentHash = '';
     return rendered;
   }
 
-  // 单条消息处理（用于CHARACTER_MESSAGE_RENDERED事件，只处理最新的AI消息）
+  // 处理最新AI消息（CHARACTER_MESSAGE_RENDERED事件触发）
   function processLatestMessage() {
     var allMessages = document.querySelectorAll('.mes');
     if (allMessages.length === 0) return;
 
-    // 找到最后一条消息
     var lastMsg = allMessages[allMessages.length - 1];
+    var lastIdx = getMessageIndex(lastMsg);
+
+    // 先给前一条消息（用户消息）补卡片
+    if (allMessages.length >= 2 && lastIdx >= 1) {
+      var prevMsg = allMessages[allMessages.length - 2];
+      var prevIdx = getMessageIndex(prevMsg);
+      var currentState = loadState();
+      if (hasContent(currentState) && prevIdx >= 0) {
+        renderCardOnMessage(prevMsg, currentState);
+        var msgStatesMap = getMsgStatesMap();
+        msgStatesMap[prevIdx] = currentState;
+        saveMsgStatesMap(msgStatesMap);
+      }
+    }
+
     if (lastMsg.classList.contains('system_mes')) return;
     if (isUserMessage(lastMsg)) return;
 
@@ -928,14 +982,23 @@
       var merged = mergeState(oldState, newState);
       merged = filterUserFromState(merged);
       saveState(merged);
-      console.log('[WST] 最新消息提取到S-summary，状态已更新');
       renderCardOnMessage(lastMsg, merged);
+      if (lastIdx >= 0) {
+        var msgStatesMap = getMsgStatesMap();
+        msgStatesMap[lastIdx] = merged;
+        saveMsgStatesMap(msgStatesMap);
+      }
+      console.log('[WST] 最新消息提取到S-summary，状态已更新');
       lastStateSentHash = '';
     } else {
-      // 无S-summary：用当前全局状态渲染
       var currentState = loadState();
       if (hasContent(currentState)) {
         renderCardOnMessage(lastMsg, currentState);
+        if (lastIdx >= 0) {
+          var msgStatesMap = getMsgStatesMap();
+          msgStatesMap[lastIdx] = currentState;
+          saveMsgStatesMap(msgStatesMap);
+        }
       }
     }
   }
@@ -1264,6 +1327,9 @@
       }
       saveState(state);
       lastStateSentHash = '';
+
+      // 清除逐消息快照，让全量重算以反映编辑
+      try { localStorage.removeItem(MSG_STATE_KEY_PREFIX + getChatId()); } catch(e) {}
 
       // 重新扫描所有消息，用编辑后的状态刷新卡片
       scan();
