@@ -201,7 +201,7 @@
 
   // ==================== 状态持久化（对标st-memory-enhancement：存在chatMetadata中） ====================
   // 数据跟随聊天对象，切换聊天时ST自动加载/保存，天然不污染
-  var WST_VERSION = '3.6.4'; // 版本号：更新后首次使用自动清理旧数据
+  var WST_VERSION = '3.7.0'; // 版本号：更新后首次使用自动清理旧数据
 
   function getChatMetadata() {
     try {
@@ -1126,6 +1126,9 @@
     saveMsgStatesMap(map);
 
     cleanupOldCards(allMessages);
+
+    // 后台触发静默总结更新状态
+    triggerSummarize();
   }
 
   function cleanupOldCards(allMessages) {
@@ -1217,6 +1220,85 @@
     }
   }
 
+  // ==================== 静默状态总结 ====================
+  var summarizeLock = false;
+
+  async function summarizeChatHistory() {
+    if (summarizeLock) return;
+    summarizeLock = true;
+    try {
+      var ctx = SillyTavern.getContext();
+      if (!ctx.chat || !Array.isArray(ctx.chat) || ctx.chat.length < 2) { summarizeLock = false; return; }
+
+      var msgs = ctx.chat.slice(-30);
+      var hist = '';
+      for (var i = 0; i < msgs.length; i++) {
+        var m = msgs[i];
+        var r = m.is_user ? (ctx.name1 || '用户') : (m.name || 'AI');
+        var t = (m.mes || '').trim();
+        if (t) hist += r + '：' + t + '\n';
+      }
+      if (!hist.trim()) { summarizeLock = false; return; }
+
+      var wb = getWorldBookData();
+      var fs2 = wb.favorabilitySystem || getDefaultFavorabilitySystem();
+      var un = getUserPersonaName();
+
+      var p = '你是世界状态提取器。根据聊天记录提取当前状态，只输出结果。\n\n聊天记录：\n' + hist +
+        '\n\n输出格式：\n时间：\n区域：\n在场角色+BUFF：\n不在场角色：\n处女膜状态：\n做爱次数：\n当前好感度：\n身体外貌：\n重要记忆点：\n- 角色名：记忆1|记忆2\n\n规则：仅追踪女性角色。好感度系统=' + fs2 +
+        (un ? '排除用户角色「' + un + '」。' : '') +
+        (wb.allKeys.length > 0 ? '角色仅限：' + wb.allKeys.join('、') + '。' : '');
+
+      var resultText = '';
+      try {
+        console.log('[WST] 🤖 generateQuietPrompt 提取状态...');
+        var r1 = await ctx.generateQuietPrompt({ quietPrompt: p, skipWIAN: true });
+        if (typeof r1 === 'string') resultText = r1;
+        else if (r1 && typeof r1 === 'object') resultText = r1.mes || r1.text || r1.content || '';
+      } catch(e) { console.warn('[WST] qP失败:', e.message); }
+
+      // 检测故事续写，用generateRaw回退
+      if (!resultText || resultText.indexOf('时间') === -1) {
+        try {
+          console.log('[WST] generateRaw 回退...');
+          var r2 = await ctx.generateRaw({
+            prompt: [
+              { role: 'system', content: '你是世界状态提取器。只输出状态数据，不续写故事。' },
+              { role: 'user', content: p }
+            ]
+          });
+          if (typeof r2 === 'string') resultText = r2;
+        } catch(e2) { console.warn('[WST] gR失败:', e2.message); }
+      }
+
+      if (resultText && resultText.length > 20 && resultText.indexOf('时间') !== -1) {
+        var ns = parseSummary(resultText);
+        if (ns && (ns.time || ns.location || ns.present)) {
+          saveState(ns);
+          console.log('[WST] ✅ 状态已提取:', ns.time, ns.location);
+          lastStateSentHash = '';
+
+          var allMes = document.querySelectorAll('.mes');
+          var total = allMes.length;
+          var map = getMsgStatesMap();
+          for (var j = Math.max(0, total - 2); j < total; j++) {
+            var idx = getMessageIndex(allMes[j]);
+            if (idx >= 0) { renderCardOnMessage(allMes[j], ns); map[idx] = ns; }
+          }
+          saveMsgStatesMap(map);
+          cleanupOldCards(allMes);
+        }
+      } else if (resultText) {
+        console.log('[WST] 总结返回非状态文本 (' + resultText.length + ' chars)');
+      }
+    } catch(e) { console.warn('[WST] 总结失败:', e.message); }
+    finally { summarizeLock = false; }
+  }
+
+  function triggerSummarize() {
+    summarizeChatHistory();
+  }
+
   // ==================== 点击交互 ====================
   document.addEventListener('click', function (e) {
     // 折叠/展开
@@ -1301,7 +1383,7 @@
   }
 
   jQuery(async function () {
-    console.log('[WST] 🚀 世界状态追踪器 v3.6.4 初始化...');
+    console.log('[WST] 🚀 世界状态追踪器 v3.7.0 初始化...');
     currentChatId = getChatId();
     cleanLegacyWSTTags();
 
